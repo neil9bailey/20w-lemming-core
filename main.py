@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
-from memory_store import initialize_memory, load_bias_profile, record_run
+from memory_store import initialize_memory, load_bias_profile, load_successful_runs, record_run
 
 
 LEMMING_DIRECTIVES: Dict[str, str] = {
@@ -99,6 +99,8 @@ class LemmingState(TypedDict):
     bias_profile: str
     node_bias_profiles: Dict[str, str]
     ai_api_config: Dict[str, Any]
+    historical_context: List[Dict[str, Any]]
+    max_history_relevance_score: float
     simulate_radar_failure: bool
     intercept_triggered: bool
     supervisor_payload: Dict[str, Any]
@@ -172,6 +174,10 @@ def _base_constraints(state: LemmingState) -> List[str]:
             "Evidence Block attached; node outputs must preserve traceability to the provided context."
         )
         constraints.append(f"Evidence excerpt: {_compact_evidence_context(evidence_context)}")
+    if state["historical_context"]:
+        constraints.append(
+            f"Dynamic history retrieval active; max relevance score: {state['max_history_relevance_score']:.6f}."
+        )
     return constraints
 
 
@@ -245,6 +251,8 @@ def lemming_01_supervisor(state: LemmingState) -> LemmingState:
         "Payload_Header": payload_header,
         "Core_Target": f"{payload_header}\n{core_target}" if payload_header else core_target,
         "Evidence_Context": evidence_context,
+        "Historical_Context": state["historical_context"],
+        "Max_History_Relevance_Score": state["max_history_relevance_score"],
         "Constraints": _base_constraints(state),
         "Metrics_Of_Success": [
             "Output preserves human sovereignty.",
@@ -398,6 +406,11 @@ lemming_app = workflow.compile()
 
 def build_initial_state(request: IngestionRequest) -> LemmingState:
     bias_profile = load_bias_profile()
+    historical_context = load_successful_runs(target_prompt=request.target_prompt, limit=3)
+    max_history_relevance_score = max(
+        (float(row.get("relevance_score", 0.0)) for row in historical_context),
+        default=0.0,
+    )
     ai_provider = request.ai_provider.strip() or "openai"
     ai_model = request.ai_model.strip() or "gpt-4.1"
     return {
@@ -422,6 +435,8 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
             "model": ai_model,
             "api_key_configured": bool(request.api_key.strip()),
         },
+        "historical_context": historical_context,
+        "max_history_relevance_score": max_history_relevance_score,
         "simulate_radar_failure": request.simulate_radar_failure,
         "intercept_triggered": False,
         "supervisor_payload": {},

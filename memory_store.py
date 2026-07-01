@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -113,21 +115,59 @@ def initialize_memory(db_path: Path = DB_PATH) -> None:
         )
 
 
-def load_successful_runs(limit: int = 5, db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
+def calculate_relevance_score(target_prompt: str, historical_intent: str) -> float:
+    """Score history by lowercase alphanumeric token overlap against the current target."""
+    target_words = set(re.findall(r"[a-z0-9]+", target_prompt.lower()))
+    historical_words = set(re.findall(r"[a-z0-9]+", historical_intent.lower()))
+    if not target_words or not historical_words:
+        return 0.0
+
+    intersection_count = len(target_words.intersection(historical_words))
+    if intersection_count == 0:
+        return 0.0
+
+    normalization = max(1.0, math.log1p(len(target_words)))
+    return round(intersection_count / normalization, 6)
+
+
+def load_successful_runs(
+    limit: int = 3,
+    db_path: Path = DB_PATH,
+    target_prompt: str = "",
+    candidate_limit: int = 15,
+) -> List[Dict[str, Any]]:
+    candidate_limit = max(limit, candidate_limit)
     with _connect(db_path) as connection:
         rows = connection.execute(
             """
             SELECT run_id, timestamp, core_target, variance_threshold, lookahead_horizon,
                    E_c, delta_a, S_d, velocity_ms, intercept_triggered, raw_prompt_length,
                    success_flag
-            FROM runs
+            FROM cognitive_history
             WHERE success_flag = 1
             ORDER BY timestamp DESC
             LIMIT ?
             """,
-            (limit,),
+            (candidate_limit,),
         ).fetchall()
-    return [dict(row) for row in rows]
+
+    scored_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        row_dict = dict(row)
+        row_dict["relevance_score"] = calculate_relevance_score(
+            target_prompt=target_prompt,
+            historical_intent=str(row_dict.get("core_target", "")),
+        )
+        scored_rows.append(row_dict)
+
+    scored_rows.sort(
+        key=lambda row: (
+            float(row.get("relevance_score", 0.0)),
+            str(row.get("timestamp", "")),
+        ),
+        reverse=True,
+    )
+    return scored_rows[:limit]
 
 
 def load_bias_vectors(limit: int = 5, db_path: Path = DB_PATH) -> List[Dict[str, Any]]:
