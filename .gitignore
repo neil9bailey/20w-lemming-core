@@ -24,6 +24,8 @@ Docker & Local Diagnostics
 
 .docker/
 *.log
+20w_memory.db
+20w_memory.db-*
 
 Windows System Files
 
