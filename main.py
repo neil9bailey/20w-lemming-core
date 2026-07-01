@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import time
 import uuid
 from typing import Any, Dict, List, TypedDict
@@ -134,6 +135,7 @@ class IngestionRequest(BaseModel):
     ai_provider: str = "openai"
     ai_model: str = "gpt-4.1"
     simulate_radar_failure: bool = False
+    override_passphrase: str = ""
 
 
 def _mark_node(state: LemmingState, node_id: str) -> None:
@@ -400,6 +402,14 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
 @app.post("/run")
 async def execute_agentic_flow(request: IngestionRequest):
     """Runs a complete, synchronous trace through the LangGraph substrate."""
+    if request.simulate_radar_failure:
+        override_key = os.getenv("ADVERSARIAL_OVERRIDE_KEY")
+        if request.override_passphrase != override_key:
+            raise HTTPException(
+                status_code=403,
+                detail="ADVERSARIAL_DENIED: Invalid override passphrase verification token.",
+            )
+
     try:
         initial_state = build_initial_state(request)
         start_time = time.perf_counter()

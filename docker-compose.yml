@@ -9,6 +9,7 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - ADVERSARIAL_OVERRIDE_KEY=LEMMING_SECRET_422
   frontend:
     image: nginx:alpine
     container_name: lemming_cockpit
