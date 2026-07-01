@@ -341,7 +341,7 @@
                                 <i class="fa-solid fa-network-wired text-cyan-400"></i> Central State Inspector
                             </h2>
                             <button onclick="copyTelemetryExport()" class="px-3 py-1.5 bg-[#0d1117] border border-[#30363d] rounded-lg text-[10px] font-bold text-slate-300 hover:text-cyan-300 hover:border-cyan-500 flex items-center gap-2">
-                                <i class="fa-solid fa-copy"></i> COPY EXPORT
+                                <i class="fa-solid fa-copy"></i> EXPORT RUN DATA
                             </button>
                         </div>
                         <div class="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
@@ -411,6 +411,7 @@
             target: "Verify the IT services market RACI models from 2026 to 2031...",
             logs: [],
             backendOnline: false,
+            terminalLogs: [],
             aiApi: {
                 provider: "openai",
                 model: "gpt-4.1",
@@ -542,27 +543,110 @@
             return typeof value === "number" ? value.toFixed(digits) : "--";
         }
 
-        function buildTelemetryExport(runResult = null) {
-            return {
-                exported_at: new Date().toISOString(),
-                backend_base_url: getBackendBaseUrl(),
-                target_prompt: document.getElementById('target-prompt').value || state.target,
-                ai_api: {
-                    provider: state.aiApi.provider,
-                    model: state.aiApi.model,
-                    api_key_configured: state.aiApi.keyConfigured
-                },
-                mathematical_telemetry: state.telemetry,
-                run: runResult ? {
-                    run_id: runResult.run_id,
-                    current_node: runResult.current_node,
-                    visited_nodes: runResult.visited_nodes,
-                    recalibrated: runResult.recalibrated,
-                    supervisor_payload: runResult.supervisor_payload,
-                    strategic_layers: runResult.strategic_layers,
-                    execution_matrix: runResult.execution_matrix
-                } : null
-            };
+        function stringifyMarkdownValue(value) {
+            if (value === null || value === undefined) return "null";
+            if (typeof value === "string") return value;
+            return JSON.stringify(value, null, 2);
+        }
+
+        function agentHeader(agentName) {
+            const normalized = (agentName || "").toLowerCase();
+            if (normalized.includes("supervisor")) return "[LEM-01] Supervisor";
+            if (normalized.includes("rh")) return "[LEM-02] RH Core";
+            if (normalized.includes("lh")) return "[LEM-03] LH Validator";
+            if (normalized.includes("banter")) return "[LEM-04] Banter Radar";
+            return `[LEM-XX] ${agentName || "Unknown Agent"}`;
+        }
+
+        function buildRunMarkdownExport(runResult = null) {
+            const lines = [];
+            const telemetry = state.telemetry;
+            const terminalSnapshot = state.terminalLogs.map((entry) => {
+                return `[${entry.timestamp}] [${entry.prefix}] ${entry.message}`;
+            });
+
+            lines.push("# 20W Cognitive Diagnostic Probe Export");
+            lines.push("");
+            lines.push(`- Exported At: ${new Date().toISOString()}`);
+            lines.push(`- Backend Base URL: ${getBackendBaseUrl()}`);
+            lines.push(`- Target Problem Statement: ${document.getElementById('target-prompt').value || state.target}`);
+            lines.push(`- Variance Threshold: ${document.getElementById('variance-slider').value}%`);
+            lines.push(`- Lookahead Horizon: ${state.lookahead} moves`);
+            lines.push(`- AI Provider: ${state.aiApi.provider}`);
+            lines.push(`- AI Model: ${state.aiApi.model}`);
+            lines.push(`- API Key Configured: ${state.aiApi.keyConfigured}`);
+            lines.push("");
+            lines.push("## Mathematical Telemetry");
+            lines.push("");
+            lines.push(`- E_c: ${stringifyMarkdownValue(telemetry.E_c)}`);
+            lines.push(`- delta_a: ${stringifyMarkdownValue(telemetry.delta_a)}`);
+            lines.push(`- S_d: ${stringifyMarkdownValue(telemetry.S_d)}`);
+            lines.push(`- pruning_percentage: ${stringifyMarkdownValue(telemetry.pruning_percentage)}`);
+            lines.push(`- autonomous_decisions: ${stringifyMarkdownValue(telemetry.autonomous_decisions)}`);
+            lines.push(`- total_decisions: ${stringifyMarkdownValue(telemetry.total_decisions)}`);
+            lines.push("");
+            lines.push("## Structural Drift Variables");
+            lines.push("");
+            lines.push(`- current_node: ${runResult?.current_node ?? "not-run"}`);
+            lines.push(`- recalibrated: ${runResult?.recalibrated ?? "not-run"}`);
+            lines.push(`- variance_threshold: ${document.getElementById('variance-slider').value}`);
+            lines.push(`- structural_drift_delta_a: ${stringifyMarkdownValue(telemetry.delta_a)}`);
+            lines.push(`- pruning_ratio: ${stringifyMarkdownValue(telemetry.pruning_percentage)}`);
+            lines.push(`- stability_ratio_S_d: ${stringifyMarkdownValue(telemetry.S_d)}`);
+            lines.push("");
+            lines.push("## System Audit Checkpoints");
+            lines.push("");
+
+            if (runResult?.logs?.length) {
+                runResult.logs.forEach((log) => lines.push(`- ${log}`));
+            } else {
+                lines.push("- No backend checkpoint logs captured.");
+            }
+
+            lines.push("");
+            lines.push("## Multi-Agent Dialogue Trace");
+            lines.push("");
+
+            if (runResult?.agent_dialogue?.length) {
+                runResult.agent_dialogue.forEach((dialogue) => {
+                    lines.push(`### ${agentHeader(dialogue.agent)}`);
+                    lines.push("");
+                    lines.push(dialogue.message);
+                    lines.push("");
+                });
+            } else {
+                lines.push("No agent dialogue captured.");
+                lines.push("");
+            }
+
+            lines.push("## Supervisor Payload");
+            lines.push("");
+            lines.push("```json");
+            lines.push(stringifyMarkdownValue(runResult?.supervisor_payload ?? null));
+            lines.push("```");
+            lines.push("");
+            lines.push("## Strategic Layers");
+            lines.push("");
+            lines.push("```json");
+            lines.push(stringifyMarkdownValue(runResult?.strategic_layers ?? []));
+            lines.push("```");
+            lines.push("");
+            lines.push("## Execution Matrix");
+            lines.push("");
+            lines.push("```json");
+            lines.push(stringifyMarkdownValue(runResult?.execution_matrix ?? []));
+            lines.push("```");
+            lines.push("");
+            lines.push("## Live Integration Terminal");
+            lines.push("");
+
+            if (terminalSnapshot.length) {
+                terminalSnapshot.forEach((log) => lines.push(`- ${log}`));
+            } else {
+                lines.push("- No terminal logs captured.");
+            }
+
+            return `${lines.join("\n")}\n`;
         }
 
         function updateMathematicalTelemetry(runResult) {
@@ -586,14 +670,18 @@
             document.getElementById('telemetry-autonomous').innerText = runResult.autonomous_decisions;
             document.getElementById('telemetry-total').innerText = runResult.total_decisions;
 
-            state.lastRunExport = buildTelemetryExport(runResult);
+            state.lastRunExport = buildRunMarkdownExport(runResult);
             refreshStateJSON();
         }
 
         async function writeClipboardText(text) {
             if (navigator.clipboard && window.isSecureContext) {
-                await navigator.clipboard.writeText(text);
-                return;
+                try {
+                    await navigator.clipboard.writeText(text);
+                    return;
+                } catch (e) {
+                    // Browser focus can block the async Clipboard API; fall through to legacy copy.
+                }
             }
             const textArea = document.createElement('textarea');
             textArea.value = text;
@@ -602,15 +690,16 @@
             textArea.style.left = '-9999px';
             document.body.appendChild(textArea);
             textArea.select();
-            document.execCommand('copy');
+            const copied = document.execCommand('copy');
             document.body.removeChild(textArea);
+            if (!copied) throw new Error("Clipboard copy command was rejected by the browser.");
         }
 
         async function copyTelemetryExport() {
-            const exportPayload = state.lastRunExport || buildTelemetryExport();
+            const exportPayload = state.lastRunExport || buildRunMarkdownExport();
             try {
-                await writeClipboardText(JSON.stringify(exportPayload, null, 2));
-                addLog("Telemetry export copied to system clipboard.", "TELEMETRY");
+                await writeClipboardText(exportPayload);
+                addLog("Formatted markdown run telemetry copied to system clipboard.", "TELEMETRY");
             } catch (e) {
                 addLog(`Clipboard export failed: ${e.message}`, "ERROR");
             }
@@ -619,6 +708,8 @@
         function addLog(message, prefix = "SYSTEM") {
             const terminal = document.getElementById('terminal-feed');
             const logEntry = document.createElement('div');
+            const timestamp = new Date().toISOString();
+            state.terminalLogs.push({ timestamp, prefix, message });
             
             let colorClass = "text-slate-500";
             if (prefix === "TELEMETRY") colorClass = "text-emerald-400";
@@ -716,6 +807,8 @@
                             const name = dia.agent.replace(" ", "_");
                             addLog(dia.message, name);
                         });
+                        addLog("STATUS: SUCCESS - Cognitive diagnostic traversal complete.", "TELEMETRY");
+                        state.lastRunExport = buildRunMarkdownExport(runResult);
                     } else {
                         addLog("Local server failed to compile Graph run. Dropping back to standalone mock...", "ERROR");
                         executeMockSimulation();
