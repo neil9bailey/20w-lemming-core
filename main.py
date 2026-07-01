@@ -92,6 +92,7 @@ class LemmingState(TypedDict):
     agent_directives: Dict[str, str]
     bias_profile: str
     node_bias_profiles: Dict[str, str]
+    ai_api_config: Dict[str, Any]
     supervisor_payload: Dict[str, Any]
     strategic_layers: List[str]
     execution_matrix: List[Dict[str, Any]]
@@ -126,6 +127,8 @@ class IngestionRequest(BaseModel):
     variance_threshold: float = Field(ge=0.0)
     lookahead_horizon: int = Field(ge=1)
     api_key: str = ""
+    ai_provider: str = "openai"
+    ai_model: str = "gpt-4.1"
 
 
 def _mark_node(state: LemmingState, node_id: str) -> None:
@@ -139,6 +142,9 @@ def _base_constraints(state: LemmingState) -> List[str]:
         "20W constraint simulation applies.",
         f"Variance threshold: {state['variance_threshold']}.",
         f"Lookahead horizon: {state['lookahead_horizon']}.",
+        f"AI API provider: {state['ai_api_config']['provider']}.",
+        f"AI model target: {state['ai_api_config']['model']}.",
+        f"AI API key configured: {state['ai_api_config']['api_key_configured']}.",
         state["node_bias_profiles"]["LEM-01"],
     ]
 
@@ -322,6 +328,8 @@ lemming_app = workflow.compile()
 
 def build_initial_state(request: IngestionRequest) -> LemmingState:
     bias_profile = load_bias_profile()
+    ai_provider = request.ai_provider.strip() or "openai"
+    ai_model = request.ai_model.strip() or "gpt-4.1"
     return {
         "run_id": str(uuid.uuid4()),
         "target_prompt": request.target_prompt,
@@ -337,6 +345,11 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
         "node_bias_profiles": {
             "LEM-01": bias_profile,
             "LEM-02": bias_profile,
+        },
+        "ai_api_config": {
+            "provider": ai_provider,
+            "model": ai_model,
+            "api_key_configured": bool(request.api_key.strip()),
         },
         "supervisor_payload": {},
         "strategic_layers": [],

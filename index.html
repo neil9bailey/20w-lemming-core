@@ -115,8 +115,50 @@
                 <div>
                     <label class="block text-xs text-slate-400 font-semibold mb-1">LOCAL BACKEND STATUS:</label>
                     <div class="flex items-center gap-2 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs">
-                        <span id="backend-status" class="code-font text-slate-400 font-bold">CHECKING...</span>
+                        <span id="backend-status-badge" class="code-font text-slate-400 font-bold">CHECKING...</span>
                         <div id="backend-dot" class="w-2 h-2 rounded-full bg-slate-500 animate-pulse"></div>
+                    </div>
+                </div>
+
+                <!-- AI API Configuration -->
+                <div class="border border-[#30363d] rounded-lg p-3 bg-[#0d1117] space-y-3">
+                    <div class="flex items-center justify-between gap-3">
+                        <label class="text-xs text-slate-400 font-semibold flex items-center gap-2">
+                            <i class="fa-solid fa-key text-cyan-400"></i> AI API CONFIGURATION
+                        </label>
+                        <span id="ai-api-status" class="code-font text-[10px] text-amber-400 font-bold">KEY NOT SET</span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[10px] text-slate-500 font-semibold mb-1">PROVIDER</label>
+                            <select id="ai-provider" onchange="syncAiApiConfig()"
+                                    class="w-full bg-[#161b22] border border-[#30363d] rounded-lg px-3 py-2 text-xs code-font text-white focus:outline-none focus:border-cyan-500">
+                                <option value="openai">OpenAI</option>
+                                <option value="anthropic">Anthropic</option>
+                                <option value="gemini">Gemini</option>
+                                <option value="openai-compatible">OpenAI-compatible</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] text-slate-500 font-semibold mb-1">MODEL</label>
+                            <input id="ai-model" type="text" value="gpt-4.1" oninput="syncAiApiConfig()"
+                                   class="w-full bg-[#161b22] border border-[#30363d] rounded-lg px-3 py-2 text-xs code-font text-white focus:outline-none focus:border-cyan-500">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-500 font-semibold mb-1">API KEY</label>
+                        <div class="flex gap-2">
+                            <input id="ai-api-key" type="password" autocomplete="off" oninput="syncAiApiConfig()"
+                                   class="min-w-0 flex-grow bg-[#161b22] border border-[#30363d] rounded-lg px-3 py-2 text-xs code-font text-white focus:outline-none focus:border-cyan-500">
+                            <button type="button" onclick="toggleAiApiKey()" aria-label="Toggle API key visibility"
+                                    class="w-10 shrink-0 bg-[#161b22] border border-[#30363d] rounded-lg text-slate-300 hover:text-cyan-300 hover:border-cyan-500">
+                                <i id="ai-api-key-eye" class="fa-solid fa-eye"></i>
+                            </button>
+                            <button type="button" onclick="clearAiApiKey()" aria-label="Clear API key"
+                                    class="w-10 shrink-0 bg-[#161b22] border border-[#30363d] rounded-lg text-slate-300 hover:text-amber-300 hover:border-amber-500">
+                                <i class="fa-solid fa-xmark"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -149,7 +191,7 @@
 
                 <!-- Strategic Action Buttons -->
                 <div class="grid grid-cols-2 gap-3 pt-2">
-                    <button onclick="runSimulation()" class="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition-all shadow-md shadow-cyan-900/10">
+                    <button onclick="runIngestion()" class="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition-all shadow-md shadow-cyan-900/10">
                         <i class="fa-solid fa-play"></i> RUN INGESTION
                     </button>
                     <button onclick="injectBanter()" class="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition-all shadow-md shadow-amber-900/10">
@@ -294,9 +336,40 @@
                     
                     <!-- Right State Inspector (JSON / Schema Terminal View) -->
                     <div class="bg-[#161b22] border border-[#30363d] rounded-xl p-5 flex flex-col relative">
-                        <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-4">
-                            <i class="fa-solid fa-network-wired text-cyan-400"></i> Central State Inspector
-                        </h2>
+                        <div class="flex items-center justify-between gap-3 mb-4">
+                            <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                <i class="fa-solid fa-network-wired text-cyan-400"></i> Central State Inspector
+                            </h2>
+                            <button onclick="copyTelemetryExport()" class="px-3 py-1.5 bg-[#0d1117] border border-[#30363d] rounded-lg text-[10px] font-bold text-slate-300 hover:text-cyan-300 hover:border-cyan-500 flex items-center gap-2">
+                                <i class="fa-solid fa-copy"></i> COPY EXPORT
+                            </button>
+                        </div>
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
+                            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg p-2">
+                                <div class="text-[10px] text-slate-500 font-bold">E_c</div>
+                                <div id="telemetry-ec" class="code-font text-sm text-emerald-400 font-bold">--</div>
+                            </div>
+                            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg p-2">
+                                <div class="text-[10px] text-slate-500 font-bold">DELTA_A</div>
+                                <div id="telemetry-delta-a" class="code-font text-sm text-cyan-400 font-bold">--</div>
+                            </div>
+                            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg p-2">
+                                <div class="text-[10px] text-slate-500 font-bold">S_d</div>
+                                <div id="telemetry-sd" class="code-font text-sm text-amber-400 font-bold">--</div>
+                            </div>
+                            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg p-2">
+                                <div class="text-[10px] text-slate-500 font-bold">PRUNING</div>
+                                <div id="telemetry-pruning" class="code-font text-sm text-white font-bold">--</div>
+                            </div>
+                            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg p-2">
+                                <div class="text-[10px] text-slate-500 font-bold">AUTO DECISIONS</div>
+                                <div id="telemetry-autonomous" class="code-font text-sm text-white font-bold">--</div>
+                            </div>
+                            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg p-2">
+                                <div class="text-[10px] text-slate-500 font-bold">TOTAL DECISIONS</div>
+                                <div id="telemetry-total" class="code-font text-sm text-white font-bold">--</div>
+                            </div>
+                        </div>
                         <!-- State Matrix Object View -->
                         <div class="flex-grow bg-[#0d1117] border border-[#21262d] rounded-lg p-3 overflow-y-auto max-h-[280px]">
                             <pre id="state-json" class="code-font text-[11px] text-cyan-400 leading-relaxed"></pre>
@@ -325,6 +398,12 @@
 
     <!-- UI State Control Script -->
     <script>
+        const getBackendBaseUrl = () => {
+            const currentHost = window.location.hostname;
+            // Resolve cleanly to the standard exposed API container gateway port
+            return `http://${currentHost}:8001`;
+        };
+
         const state = {
             energy: 14.0,
             lookahead: 4,
@@ -332,8 +411,20 @@
             target: "Verify the IT services market RACI models from 2026 to 2031...",
             logs: [],
             backendOnline: false,
-            // Aligned API host directly with your loopback engine address to skip domain resolution drops
-            backendBaseUrl: "http://127.0.0.1:8001", 
+            aiApi: {
+                provider: "openai",
+                model: "gpt-4.1",
+                keyConfigured: false
+            },
+            telemetry: {
+                E_c: null,
+                delta_a: null,
+                S_d: null,
+                pruning_percentage: null,
+                autonomous_decisions: 0,
+                total_decisions: 0
+            },
+            lastRunExport: null,
             lemmingStates: {
                 1: { title: "LEM-01 SUPERVISOR", status: "ACTIVE", pulse: "cyan", detail: "Intent Filtering activated. Clean routing bounds." },
                 2: { title: "LEM-02 RH CORE", status: "ACTIVE", pulse: "purple", detail: "Structuring global context. Lookahead horizon active." },
@@ -344,6 +435,7 @@
 
         window.onload = function() {
             updateSliders();
+            syncAiApiConfig();
             refreshStateJSON();
             checkBackendHealth();
             // Poll backend health every 5 seconds
@@ -351,21 +443,21 @@
         };
 
         async function checkBackendHealth() {
-            const statusLabel = document.getElementById('backend-status');
+            const statusLabel = document.getElementById('backend-status-badge');
             const dot = document.getElementById('backend-dot');
             try {
-                const res = await fetch(`${state.backendBaseUrl}/health`);
+                const res = await fetch(`${getBackendBaseUrl()}/health`);
                 if(res.ok) {
                     const data = await res.json();
                     state.backendOnline = true;
-                    statusLabel.innerText = "ONLINE (F:\\code\\20w-lemming-core)";
-                    statusLabel.className = "code-font text-emerald-400 font-bold";
+                    statusLabel.innerText = "ONLINE (DOCKER_NET)";
+                    statusLabel.className = "code-font bg-emerald-500/10 text-emerald-400 font-bold px-2 py-0.5 rounded";
                     dot.className = "w-2 h-2 rounded-full bg-emerald-500";
                 }
             } catch (e) {
                 state.backendOnline = false;
                 statusLabel.innerText = "OFFLINE (STANDALONE MOCK ACTIVE)";
-                statusLabel.className = "code-font text-amber-500 font-bold";
+                statusLabel.className = "code-font bg-amber-500/10 text-amber-400 font-bold px-2 py-0.5 rounded";
                 dot.className = "w-2 h-2 rounded-full bg-amber-500";
             }
         }
@@ -388,10 +480,50 @@
             refreshStateJSON();
         }
 
+        function syncAiApiConfig() {
+            const provider = document.getElementById('ai-provider').value;
+            const model = document.getElementById('ai-model').value.trim() || "gpt-4.1";
+            const apiKey = document.getElementById('ai-api-key').value.trim();
+            const status = document.getElementById('ai-api-status');
+
+            state.aiApi.provider = provider;
+            state.aiApi.model = model;
+            state.aiApi.keyConfigured = apiKey.length > 0;
+
+            if (state.aiApi.keyConfigured) {
+                status.innerText = "KEY SET";
+                status.className = "code-font text-[10px] text-emerald-400 font-bold";
+            } else {
+                status.innerText = "KEY NOT SET";
+                status.className = "code-font text-[10px] text-amber-400 font-bold";
+            }
+
+            refreshStateJSON();
+        }
+
+        function toggleAiApiKey() {
+            const input = document.getElementById('ai-api-key');
+            const icon = document.getElementById('ai-api-key-eye');
+            const show = input.type === "password";
+            input.type = show ? "text" : "password";
+            icon.className = show ? "fa-solid fa-eye-slash" : "fa-solid fa-eye";
+        }
+
+        function clearAiApiKey() {
+            document.getElementById('ai-api-key').value = "";
+            syncAiApiConfig();
+        }
+
         function refreshStateJSON() {
             const displayObj = {
                 "system_container": "neil9bailey/20w-lemming-core",
                 "backend_integrated": state.backendOnline,
+                "ai_api": {
+                    "provider": state.aiApi.provider,
+                    "model": state.aiApi.model,
+                    "api_key_configured": state.aiApi.keyConfigured
+                },
+                "mathematical_telemetry": state.telemetry,
                 "telemetry_power": `${state.energy}W`,
                 "lookahead_depth": state.lookahead,
                 "current_sovereign_intent": document.getElementById('target-prompt').value || state.target,
@@ -404,6 +536,84 @@
                 ]
             };
             document.getElementById('state-json').innerText = JSON.stringify(displayObj, null, 2);
+        }
+
+        function formatTelemetryValue(value, digits = 4) {
+            return typeof value === "number" ? value.toFixed(digits) : "--";
+        }
+
+        function buildTelemetryExport(runResult = null) {
+            return {
+                exported_at: new Date().toISOString(),
+                backend_base_url: getBackendBaseUrl(),
+                target_prompt: document.getElementById('target-prompt').value || state.target,
+                ai_api: {
+                    provider: state.aiApi.provider,
+                    model: state.aiApi.model,
+                    api_key_configured: state.aiApi.keyConfigured
+                },
+                mathematical_telemetry: state.telemetry,
+                run: runResult ? {
+                    run_id: runResult.run_id,
+                    current_node: runResult.current_node,
+                    visited_nodes: runResult.visited_nodes,
+                    recalibrated: runResult.recalibrated,
+                    supervisor_payload: runResult.supervisor_payload,
+                    strategic_layers: runResult.strategic_layers,
+                    execution_matrix: runResult.execution_matrix
+                } : null
+            };
+        }
+
+        function updateMathematicalTelemetry(runResult) {
+            state.telemetry = {
+                E_c: runResult.E_c,
+                delta_a: runResult.delta_a,
+                S_d: runResult.S_d,
+                pruning_percentage: runResult.pruning_percentage,
+                autonomous_decisions: runResult.autonomous_decisions,
+                total_decisions: runResult.total_decisions
+            };
+            state.energy = formatTelemetryValue(runResult.E_c, 4);
+            state.drift = runResult.delta_a;
+
+            document.getElementById('hud-energy').innerText = `${state.energy}W`;
+            document.getElementById('hud-drift').innerText = `${formatTelemetryValue(runResult.delta_a, 2)}%`;
+            document.getElementById('telemetry-ec').innerText = formatTelemetryValue(runResult.E_c);
+            document.getElementById('telemetry-delta-a').innerText = formatTelemetryValue(runResult.delta_a);
+            document.getElementById('telemetry-sd').innerText = formatTelemetryValue(runResult.S_d);
+            document.getElementById('telemetry-pruning').innerText = formatTelemetryValue(runResult.pruning_percentage);
+            document.getElementById('telemetry-autonomous').innerText = runResult.autonomous_decisions;
+            document.getElementById('telemetry-total').innerText = runResult.total_decisions;
+
+            state.lastRunExport = buildTelemetryExport(runResult);
+            refreshStateJSON();
+        }
+
+        async function writeClipboardText(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return;
+            }
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.setAttribute('readonly', '');
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-9999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+        }
+
+        async function copyTelemetryExport() {
+            const exportPayload = state.lastRunExport || buildTelemetryExport();
+            try {
+                await writeClipboardText(JSON.stringify(exportPayload, null, 2));
+                addLog("Telemetry export copied to system clipboard.", "TELEMETRY");
+            } catch (e) {
+                addLog(`Clipboard export failed: ${e.message}`, "ERROR");
+            }
         }
 
         function addLog(message, prefix = "SYSTEM") {
@@ -463,32 +673,44 @@
             addLog("Reset complete. Sovereign Supervisor cache memory flushed cleanly. Telemetry Compliant.", "TELEMETRY");
         }
 
-        async function runSimulation() {
+        async function runIngestion() {
             const prompt = document.getElementById('target-prompt').value || state.target;
             const variance = document.getElementById('variance-slider').value;
+            syncAiApiConfig();
 
             addLog(`Sovereign ingestion triggered for objective: "${prompt}"`, "SYSTEM");
 
             if (state.backendOnline) {
                 addLog("Sending payload parameters to local LangGraph FastAPI server...", "TELEMETRY");
                 try {
-                    const response = await fetch(`${state.backendBaseUrl}/run`, {
+                    const response = await fetch(`${getBackendBaseUrl()}/run`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             target_prompt: prompt,
                             variance_threshold: parseFloat(variance),
-                            lookahead_horizon: state.lookahead
+                            lookahead_horizon: state.lookahead,
+                            ai_provider: state.aiApi.provider,
+                            ai_model: state.aiApi.model,
+                            api_key: document.getElementById('ai-api-key').value.trim()
                         })
                     });
                     
                     if (response.ok) {
                         const runResult = await response.json();
                         addLog("LangGraph flow completed successfully. Parsing agent conversation traces:", "TELEMETRY");
+                        updateMathematicalTelemetry(runResult);
                         
                         runResult.logs.forEach(log => {
                             addLog(log, "TELEMETRY");
                         });
+
+                        if (runResult.ai_api_config) {
+                            addLog(
+                                `AI API config accepted: ${runResult.ai_api_config.provider}/${runResult.ai_api_config.model}; key configured=${runResult.ai_api_config.api_key_configured}`,
+                                "TELEMETRY"
+                            );
+                        }
 
                         runResult.agent_dialogue.forEach(dia => {
                             const name = dia.agent.replace(" ", "_");
@@ -499,6 +721,7 @@
                         executeMockSimulation();
                     }
                 } catch (e) {
+                    addLog("[NETWORK ERROR] Failed to communicate with containerized LangGraph API gateway. Verify Docker container state.", "ERROR");
                     addLog(`API transaction error: ${e.message}. Falling back to stand-alone mock.`, "ERROR");
                     executeMockSimulation();
                 }
@@ -506,6 +729,10 @@
                 addLog("Local Python Server offline. Launching fallback standalone mock loop...", "TELEMETRY");
                 setTimeout(() => { executeMockSimulation(); }, 800);
             }
+        }
+
+        function runSimulation() {
+            return runIngestion();
         }
 
         function executeMockSimulation() {
