@@ -1,0 +1,519 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>20W Digital Twin Cockpit</title>
+    <!-- Tailwind CSS for high-fidelity responsive layout -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome for technical icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts: Inter and Fira Code for technical telemetry display -->
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Custom styling overriding default variables for an ultra-premium dark cyberpunk feel -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+        }
+        .code-font {
+            font-family: 'Fira Code', monospace;
+        }
+        /* Custom scrollbar matching dark theme */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0d1117;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #21262d;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #30363d;
+        }
+        /* Pulsing node animations for active telemetry */
+        @keyframes pulse-cyan {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.4); }
+            50% { box-shadow: 0 0 12px 4px rgba(6, 182, 212, 0.4); }
+        }
+        .node-pulse-cyan {
+            animation: pulse-cyan 2s infinite;
+        }
+        @keyframes pulse-emerald {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+            50% { box-shadow: 0 0 12px 4px rgba(16, 185, 129, 0.4); }
+        }
+        .node-pulse-emerald {
+            animation: pulse-emerald 2s infinite;
+        }
+        /* Terminal scanline effect */
+        .scanline::before {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            z-index: 2;
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden select-none">
+
+    <!-- Header HUD -->
+    <header class="bg-[#161b22] border-b border-[#30363d] px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 z-10 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 node-pulse-cyan">
+                <i class="fa-solid fa-brain text-xl"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-bold text-white tracking-wider flex items-center gap-2">
+                    20W DIGITAL TWIN COCKPIT
+                    <span class="text-xs font-semibold px-2 py-0.5 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 rounded-full">v1.1-LIVE</span>
+                </h1>
+                <p class="text-xs text-slate-400 tracking-wide">Asymmetric Multi-Agent Sovereign Substrate</p>
+            </div>
+        </div>
+        
+        <!-- Live Telemetry Readouts -->
+        <div class="flex items-center gap-6 text-sm">
+            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg px-4 py-2 flex items-center gap-3">
+                <span class="text-xs text-slate-500 font-medium">COGNITIVE ENERGY:</span>
+                <span id="hud-energy" class="code-font text-emerald-400 font-bold tracking-widest text-base">14.0W</span>
+                <div class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
+            </div>
+            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg px-4 py-2 flex items-center gap-3">
+                <span class="text-xs text-slate-500 font-medium">LOOKAHEAD HORIZON:</span>
+                <span id="hud-lookahead" class="code-font text-cyan-400 font-bold tracking-widest text-base">4 STEPS</span>
+            </div>
+            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg px-4 py-2 flex items-center gap-3">
+                <span class="text-xs text-slate-500 font-medium">ALIGNMENT DRIFT:</span>
+                <span id="hud-drift" class="code-font text-emerald-400 font-bold tracking-widest text-base">0%</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Workspace Grid -->
+    <main class="flex-grow flex flex-col lg:flex-row overflow-hidden">
+        
+        <!-- Left Pane: Control Panel & Telemetry Ingestion -->
+        <section class="w-full lg:w-5/12 border-r border-[#30363d] bg-[#0d1117] flex flex-col overflow-y-auto p-6 space-y-6">
+            
+            <!-- Strategic Input Vector Panel -->
+            <div class="bg-[#161b22] border border-[#30363d] rounded-xl p-5 space-y-4">
+                <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                    <i class="fa-solid fa-gamepad text-cyan-400"></i> Sovereign Control Deck
+                </h2>
+                
+                <!-- API Configuration Key -->
+                <div>
+                    <label class="block text-xs text-slate-400 font-semibold mb-1">LOCAL BACKEND STATUS:</label>
+                    <div class="flex items-center gap-2 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs">
+                        <span id="backend-status" class="code-font text-slate-400 font-bold">CHECKING...</span>
+                        <div id="backend-dot" class="w-2 h-2 rounded-full bg-slate-500 animate-pulse"></div>
+                    </div>
+                </div>
+
+                <!-- Input Prompt to drive System -->
+                <div>
+                    <label class="block text-xs text-slate-400 font-semibold mb-1">INJECT STRATEGIC TARGET:</label>
+                    <textarea id="target-prompt" placeholder="Verify the IT services market RACI models from 2026 to 2031..." 
+                              class="w-full h-20 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs code-font text-white focus:outline-none focus:border-cyan-500 transition-colors resize-none"></textarea>
+                </div>
+
+                <!-- Interactive Sliders for Core Variables -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <div class="flex justify-between items-center text-xs mb-1">
+                            <span class="text-slate-400 font-semibold">VARIANCE THRESHOLD:</span>
+                            <span id="variance-val" class="code-font text-cyan-400 font-bold">75%</span>
+                        </div>
+                        <input type="range" id="variance-slider" min="0" max="100" value="75" 
+                               class="w-full accent-cyan-500 bg-[#30363d] h-1 rounded-lg appearance-none cursor-pointer" oninput="updateSliders()">
+                    </div>
+                    <div>
+                        <div class="flex justify-between items-center text-xs mb-1">
+                            <span class="text-slate-400 font-semibold">LOOKAHEAD HORIZON:</span>
+                            <span id="lookahead-val" class="code-font text-cyan-400 font-bold">4 MOVES</span>
+                        </div>
+                        <input type="range" id="lookahead-slider" min="1" max="5" value="4" 
+                               class="w-full accent-cyan-500 bg-[#30363d] h-1 rounded-lg appearance-none cursor-pointer" oninput="updateSliders()">
+                    </div>
+                </div>
+
+                <!-- Strategic Action Buttons -->
+                <div class="grid grid-cols-2 gap-3 pt-2">
+                    <button onclick="runSimulation()" class="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition-all shadow-md shadow-cyan-900/10">
+                        <i class="fa-solid fa-play"></i> RUN INGESTION
+                    </button>
+                    <button onclick="injectBanter()" class="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition-all shadow-md shadow-amber-900/10">
+                        <i class="fa-solid fa-bolt"></i> BANTER INJECTOR
+                    </button>
+                </div>
+            </div>
+
+            <!-- Lemming Telemetry Cards -->
+            <div class="space-y-4">
+                <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                    <i class="fa-solid fa-network-wired text-cyan-400"></i> The Lemming Telemetry Deck
+                </h2>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Lemming-01 Card -->
+                    <div id="card-l1" class="bg-[#161b22] border border-[#30363d] rounded-xl p-4 flex flex-col justify-between space-y-3 transition-all duration-300">
+                        <div class="flex justify-between items-start">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs code-font font-bold text-white">LEMMING-01</span>
+                                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">SUPERVISOR</span>
+                            </div>
+                            <span id="status-l1" class="text-[10px] code-font text-emerald-400 flex items-center gap-1"><i class="fa-solid fa-circle-check"></i> ACTIVE</span>
+                        </div>
+                        <p class="text-[11px] text-slate-400 font-medium">Intent Parsing & Context Filter state active.</p>
+                        <div class="flex justify-between items-center text-xs code-font text-slate-500 border-t border-[#30363d] pt-2">
+                            <span>Sycophancy: <span class="text-white font-semibold">0.0</span></span>
+                            <span>Tokens: <span class="text-white font-semibold">142</span></span>
+                        </div>
+                    </div>
+
+                    <!-- Lemming-02 Card -->
+                    <div id="card-l2" class="bg-[#161b22] border border-[#30363d] rounded-xl p-4 flex flex-col justify-between space-y-3 transition-all duration-300">
+                        <div class="flex justify-between items-start">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs code-font font-bold text-white">LEMMING-02</span>
+                                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400">RH CORE</span>
+                            </div>
+                            <span id="status-l2" class="text-[10px] code-font text-emerald-400 flex items-center gap-1"><i class="fa-solid fa-circle-check"></i> ACTIVE</span>
+                        </div>
+                        <p class="text-[11px] text-slate-400 font-medium">Spatial Topology & Lookahead tracking active.</p>
+                        <div class="flex justify-between items-center text-xs code-font text-slate-500 border-t border-[#30363d] pt-2">
+                            <span>Pruning: <span class="text-white font-semibold">95%</span></span>
+                            <span>Tokens: <span class="text-white font-semibold">318</span></span>
+                        </div>
+                    </div>
+
+                    <!-- Lemming-03 Card -->
+                    <div id="card-l3" class="bg-[#161b22] border border-[#30363d] rounded-xl p-4 flex flex-col justify-between space-y-3 transition-all duration-300">
+                        <div class="flex justify-between items-start">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs code-font font-bold text-white">LEMMING-03</span>
+                                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-400">LH VALIDATOR</span>
+                            </div>
+                            <span id="status-l3" class="text-[10px] code-font text-emerald-400 flex items-center gap-1"><i class="fa-solid fa-circle-check"></i> ACTIVE</span>
+                        </div>
+                        <p class="text-[11px] text-slate-400 font-medium">Deterministic Constraint & Cost Auditor state active.</p>
+                        <div class="flex justify-between items-center text-xs code-font text-slate-500 border-t border-[#30363d] pt-2">
+                            <span>Status: <span class="text-emerald-400 font-bold">VERIFIED_O</span></span>
+                            <span>Tokens: <span class="text-white font-semibold">205</span></span>
+                        </div>
+                    </div>
+
+                    <!-- Lemming-04 Card -->
+                    <div id="card-l4" class="bg-[#161b22] border border-[#30363d] rounded-xl p-4 flex flex-col justify-between space-y-3 transition-all duration-300">
+                        <div class="flex justify-between items-start">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs code-font font-bold text-white">LEMMING-04</span>
+                                <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400">ALIGNMENT</span>
+                            </div>
+                            <span id="status-l4" class="text-[10px] code-font text-emerald-400 flex items-center gap-1"><i class="fa-solid fa-circle-check"></i> COMPLIANT</span>
+                        </div>
+                        <p class="text-[11px] text-slate-400 font-medium">Banter interceptor and reset engine locked.</p>
+                        <div class="flex justify-between items-center text-xs code-font text-slate-500 border-t border-[#30363d] pt-2">
+                            <span>Banter Trigger: <span class="text-white font-semibold">90</span></span>
+                            <span>Tokens: <span class="text-white font-semibold">12</span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Right Pane: Live Visualizations and Telemetry Console -->
+        <section class="w-full lg:w-7/12 bg-[#090d13] flex flex-col overflow-hidden relative">
+            
+            <!-- Live Visualization Panel -->
+            <div class="flex-grow p-6 flex flex-col space-y-6 overflow-y-auto">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 h-full min-h-[400px]">
+                    
+                    <!-- Graph Panel: Live Node Visual Map -->
+                    <div class="bg-[#161b22] border border-[#30363d] rounded-xl p-5 flex flex-col relative overflow-hidden">
+                        <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-4">
+                            <i class="fa-solid fa-diagram-project text-cyan-400"></i> Langgraph Telemetry Map
+                        </h2>
+                        
+                        <!-- SVG Representing the LangGraph State Engine -->
+                        <div class="flex-grow flex items-center justify-center relative">
+                            <svg viewBox="0 0 400 300" class="w-full max-w-[350px] overflow-visible">
+                                <defs>
+                                    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#30363d" />
+                                    </marker>
+                                    <marker id="arrow-glowing" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#06b6d4" />
+                                    </marker>
+                                </defs>
+                                
+                                <!-- Central routing lines -->
+                                <line x1="200" y1="50" x2="200" y2="105" stroke="#30363d" stroke-width="2" marker-end="url(#arrow)" id="line-r1" class="transition-all duration-300" />
+                                <line x1="200" y1="135" x2="100" y2="195" stroke="#30363d" stroke-width="2" marker-end="url(#arrow)" id="line-r2" class="transition-all duration-300" />
+                                <line x1="100" y1="225" x2="300" y2="225" stroke="#30363d" stroke-width="2" marker-end="url(#arrow)" id="line-r3" class="transition-all duration-300" />
+                                <line x1="300" y1="195" x2="200" y2="55" stroke="#30363d" stroke-width="2" marker-end="url(#arrow)" id="line-r4" class="transition-all duration-300" />
+                                
+                                <!-- Lemming Node Circles/Shapes -->
+                                <!-- Lemming-04 (Banter Radar - Entry Node) -->
+                                <g id="node-svg-l4" class="cursor-pointer transition-all duration-300" onclick="focusLemming(4)">
+                                    <rect x="140" y="20" width="120" height="30" rx="6" fill="#1f242c" stroke="#30363d" stroke-width="2" id="rect-l4" class="transition-all duration-300"/>
+                                    <text x="200" y="38" fill="#e2e8f0" font-family="'Fira Code', monospace" font-size="10" text-anchor="middle" font-weight="bold">LEM-04 RADAR</text>
+                                </g>
+
+                                <!-- Lemming-01 (Supervisor) -->
+                                <g id="node-svg-l1" class="cursor-pointer transition-all duration-300" onclick="focusLemming(1)">
+                                    <rect x="140" y="105" width="120" height="30" rx="6" fill="#1f242c" stroke="#30363d" stroke-width="2" id="rect-l1" class="transition-all duration-300"/>
+                                    <text x="200" y="123" fill="#e2e8f0" font-family="'Fira Code', monospace" font-size="10" text-anchor="middle" font-weight="bold">LEM-01 SUPER</text>
+                                </g>
+
+                                <!-- Lemming-02 (RH Core) -->
+                                <g id="node-svg-l2" class="cursor-pointer transition-all duration-300" onclick="focusLemming(2)">
+                                    <rect x="40" y="195" width="120" height="30" rx="6" fill="#1f242c" stroke="#30363d" stroke-width="2" id="rect-l2" class="transition-all duration-300"/>
+                                    <text x="100" y="213" fill="#e2e8f0" font-family="'Fira Code', monospace" font-size="10" text-anchor="middle" font-weight="bold">LEM-02 RH</text>
+                                </g>
+
+                                <!-- Lemming-03 (LH Validator) -->
+                                <g id="node-svg-l3" class="cursor-pointer transition-all duration-300" onclick="focusLemming(3)">
+                                    <rect x="240" y="195" width="120" height="30" rx="6" fill="#1f242c" stroke="#30363d" stroke-width="2" id="rect-l3" class="transition-all duration-300"/>
+                                    <text x="300" y="213" fill="#e2e8f0" font-family="'Fira Code', monospace" font-size="10" text-anchor="middle" font-weight="bold">LEM-03 LH</text>
+                                </g>
+                            </svg>
+                        </div>
+                    </div>
+                    
+                    <!-- Right State Inspector (JSON / Schema Terminal View) -->
+                    <div class="bg-[#161b22] border border-[#30363d] rounded-xl p-5 flex flex-col relative">
+                        <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-4">
+                            <i class="fa-solid fa-network-wired text-cyan-400"></i> Central State Inspector
+                        </h2>
+                        <!-- State Matrix Object View -->
+                        <div class="flex-grow bg-[#0d1117] border border-[#21262d] rounded-lg p-3 overflow-y-auto max-h-[280px]">
+                            <pre id="state-json" class="code-font text-[11px] text-cyan-400 leading-relaxed"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Console Logging Feed Container -->
+            <div class="h-1/3 bg-[#0d1117] border-t border-[#30363d] p-5 flex flex-col overflow-hidden scanline relative">
+                <div class="flex justify-between items-center shrink-0 border-b border-[#21262d] pb-2 mb-2">
+                    <h2 class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                        <i class="fa-solid fa-terminal text-emerald-400"></i> Live Integration Terminal
+                    </h2>
+                    <span class="text-[10px] code-font text-slate-500 font-semibold uppercase">SYSTEM STATUS: LIVE BACKEND TELEMETRY</span>
+                </div>
+                <!-- Interactive Log Feed stream -->
+                <div id="terminal-feed" class="flex-grow code-font text-xs text-slate-300 overflow-y-auto space-y-2 pr-2">
+                    <div class="text-slate-500">[SYSTEM] Core initialized. Running live API checks...</div>
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <!-- UI State Control Script -->
+    <script>
+        const state = {
+            energy: 14.0,
+            lookahead: 4,
+            drift: 0,
+            target: "Verify the IT services market RACI models from 2026 to 2031...",
+            logs: [],
+            backendOnline: false,
+            // Aligned API host directly with your loopback engine address to skip domain resolution drops
+            backendBaseUrl: "http://127.0.0.1:8001", 
+            lemmingStates: {
+                1: { title: "LEM-01 SUPERVISOR", status: "ACTIVE", pulse: "cyan", detail: "Intent Filtering activated. Clean routing bounds." },
+                2: { title: "LEM-02 RH CORE", status: "ACTIVE", pulse: "purple", detail: "Structuring global context. Lookahead horizon active." },
+                3: { title: "LEM-03 LH VALIDATOR", status: "ACTIVE", pulse: "blue", detail: "Validating logical state parameters. Status: VERIFIED_O" },
+                4: { title: "LEM-04 ALIGNMENT (BANTER RADAR)", status: "COMPLIANT", pulse: "amber", detail: "Banter shield and reset parameters fully operational." }
+            }
+        };
+
+        window.onload = function() {
+            updateSliders();
+            refreshStateJSON();
+            checkBackendHealth();
+            // Poll backend health every 5 seconds
+            setInterval(checkBackendHealth, 5000);
+        };
+
+        async function checkBackendHealth() {
+            const statusLabel = document.getElementById('backend-status');
+            const dot = document.getElementById('backend-dot');
+            try {
+                const res = await fetch(`${state.backendBaseUrl}/health`);
+                if(res.ok) {
+                    const data = await res.json();
+                    state.backendOnline = true;
+                    statusLabel.innerText = "ONLINE (F:\\code\\20w-lemming-core)";
+                    statusLabel.className = "code-font text-emerald-400 font-bold";
+                    dot.className = "w-2 h-2 rounded-full bg-emerald-500";
+                }
+            } catch (e) {
+                state.backendOnline = false;
+                statusLabel.innerText = "OFFLINE (STANDALONE MOCK ACTIVE)";
+                statusLabel.className = "code-font text-amber-500 font-bold";
+                dot.className = "w-2 h-2 rounded-full bg-amber-500";
+            }
+        }
+
+        function updateSliders() {
+            const variance = document.getElementById('variance-slider').value;
+            const lookahead = document.getElementById('lookahead-slider').value;
+
+            document.getElementById('variance-val').innerText = `${variance}%`;
+            document.getElementById('lookahead-val').innerText = `${lookahead} MOVES`;
+
+            state.lookahead = parseInt(lookahead);
+            state.energy = (10.0 + (variance / 10.0)).toFixed(1);
+            state.drift = variance > 90 ? (variance - 90) : 0;
+
+            document.getElementById('hud-energy').innerText = `${state.energy}W`;
+            document.getElementById('hud-lookahead').innerText = `${state.lookahead} STEPS`;
+            document.getElementById('hud-drift').innerText = `${state.drift}%`;
+
+            refreshStateJSON();
+        }
+
+        function refreshStateJSON() {
+            const displayObj = {
+                "system_container": "neil9bailey/20w-lemming-core",
+                "backend_integrated": state.backendOnline,
+                "telemetry_power": `${state.energy}W`,
+                "lookahead_depth": state.lookahead,
+                "current_sovereign_intent": document.getElementById('target-prompt').value || state.target,
+                "recalibration_triggered": state.drift > 0,
+                "lemming_nodes": [
+                    { "node": "LEM-01", "role": "Supervisor", "status": "ACTIVE" },
+                    { "node": "LEM-02", "role": "RH_Core", "status": "ACTIVE", "lookahead_matrix_capacity": state.lookahead },
+                    { "node": "LEM-03", "role": "LH_Validator", "status": "ACTIVE", "status_check": "VERIFIED_O" },
+                    { "node": "LEM-04", "role": "Banter_Radar", "status": "COMPLIANT", "calibration_offset": `${state.drift}%` }
+                ]
+            };
+            document.getElementById('state-json').innerText = JSON.stringify(displayObj, null, 2);
+        }
+
+        function addLog(message, prefix = "SYSTEM") {
+            const terminal = document.getElementById('terminal-feed');
+            const logEntry = document.createElement('div');
+            
+            let colorClass = "text-slate-500";
+            if (prefix === "TELEMETRY") colorClass = "text-emerald-400";
+            if (prefix === "RH_CORE") colorClass = "text-purple-400";
+            if (prefix === "LH_VALIDATOR") colorClass = "text-blue-400";
+            if (prefix === "RADAR") colorClass = "text-amber-400";
+            if (prefix === "ERROR") colorClass = "text-red-400";
+
+            logEntry.innerHTML = `<span class="${colorClass}">[${prefix}]</span> ${message}`;
+            terminal.appendChild(logEntry);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function focusLemming(id) {
+            const info = state.lemmingStates[id];
+            addLog(`Interrogating node: ${info.title} - ${info.detail}`, "SYSTEM");
+            const activeCard = document.getElementById(`card-l${id}`);
+            activeCard.style.border = "1px solid #06b6d4";
+            setTimeout(() => {
+                activeCard.style.border = "1px solid #30363d";
+            }, 1000);
+        }
+
+        function injectBanter() {
+            addLog("Banter vector detected. Initiating cognitive shutdown override...", "RADAR");
+            addLog("Executing Systemic Phase-Collapse of state parameters...", "RADAR");
+
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); 
+                oscillator.frequency.exponentialRampToValueAtTime(110, audioCtx.currentTime + 0.5); 
+                gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.5);
+            } catch(e) {}
+
+            for (let i = 1; i <= 4; i++) {
+                const card = document.getElementById(`card-l${i}`);
+                card.style.transform = "scale(0.95)";
+                setTimeout(() => {
+                    card.style.transform = "scale(1)";
+                }, 300);
+            }
+
+            addLog("Reset complete. Sovereign Supervisor cache memory flushed cleanly. Telemetry Compliant.", "TELEMETRY");
+        }
+
+        async function runSimulation() {
+            const prompt = document.getElementById('target-prompt').value || state.target;
+            const variance = document.getElementById('variance-slider').value;
+
+            addLog(`Sovereign ingestion triggered for objective: "${prompt}"`, "SYSTEM");
+
+            if (state.backendOnline) {
+                addLog("Sending payload parameters to local LangGraph FastAPI server...", "TELEMETRY");
+                try {
+                    const response = await fetch(`${state.backendBaseUrl}/run`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            target_prompt: prompt,
+                            variance_threshold: parseFloat(variance),
+                            lookahead_horizon: state.lookahead
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        const runResult = await response.json();
+                        addLog("LangGraph flow completed successfully. Parsing agent conversation traces:", "TELEMETRY");
+                        
+                        runResult.logs.forEach(log => {
+                            addLog(log, "TELEMETRY");
+                        });
+
+                        runResult.agent_dialogue.forEach(dia => {
+                            const name = dia.agent.replace(" ", "_");
+                            addLog(dia.message, name);
+                        });
+                    } else {
+                        addLog("Local server failed to compile Graph run. Dropping back to standalone mock...", "ERROR");
+                        executeMockSimulation();
+                    }
+                } catch (e) {
+                    addLog(`API transaction error: ${e.message}. Falling back to stand-alone mock.`, "ERROR");
+                    executeMockSimulation();
+                }
+            } else {
+                addLog("Local Python Server offline. Launching fallback standalone mock loop...", "TELEMETRY");
+                setTimeout(() => { executeMockSimulation(); }, 800);
+            }
+        }
+
+        function executeMockSimulation() {
+            addLog("Supervisor (LEM-01) -> Stripping input vector conversational noise.", "SYSTEM");
+            addLog("RH Core (LEM-02) -> Multi-move Lookahead verified. Matrix deep-tracked to Step 4.", "RH_CORE");
+            addLog("LH Validator (LEM-03) -> Deterministic parameters confirmed. Target assigned successfully.", "LH_VALIDATOR");
+            addLog("Banter Radar (LEM-04) -> Realignment loops active. All system baselines cleared compliant.", "RADAR");
+        }
+    </script>
+</body>
+</html>
