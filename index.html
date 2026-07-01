@@ -93,8 +93,8 @@
                 <span id="hud-lookahead" class="code-font text-cyan-400 font-bold tracking-widest text-base">4 STEPS</span>
             </div>
             <div class="bg-[#0d1117] border border-[#21262d] rounded-lg px-4 py-2 flex items-center gap-3">
-                <span class="text-xs text-slate-500 font-medium">ALIGNMENT DRIFT:</span>
-                <span id="hud-drift" class="code-font text-emerald-400 font-bold tracking-widest text-base">0%</span>
+                <span class="text-xs text-slate-500 font-medium">STRUCTURAL DRIFT:</span>
+                <span id="hud-sd" class="code-font text-emerald-400 font-bold tracking-widest text-base">0.0</span>
             </div>
         </div>
     </header>
@@ -186,6 +186,18 @@
                         </div>
                         <input type="range" id="lookahead-slider" min="1" max="5" value="4" 
                                class="w-full accent-cyan-500 bg-[#30363d] h-1 rounded-lg appearance-none cursor-pointer" oninput="updateSliders()">
+                    </div>
+                </div>
+
+                <!-- Adversarial State Interception Controls -->
+                <div id="adversarial-override-panel" class="border border-red-500/20 bg-red-500/5 rounded-lg p-3 space-y-2">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <label class="flex items-center gap-3 text-[11px] code-font font-bold text-red-200 cursor-pointer select-none">
+                            <input id="override-radar-degradation" type="checkbox" onchange="syncOverrideState()"
+                                   class="h-4 w-4 rounded border-red-500/40 bg-[#0d1117] accent-red-500 cursor-pointer">
+                            <span>[ FORCE LEM-04 RADAR DEGRADATION ]</span>
+                        </label>
+                        <span id="override-status-label" class="code-font text-[10px] text-slate-500 font-bold">[ ADVERSARIAL STATE: NOMINAL ]</span>
                     </div>
                 </div>
 
@@ -412,6 +424,9 @@
             logs: [],
             backendOnline: false,
             terminalLogs: [],
+            override: {
+                radarDegradation: false
+            },
             aiApi: {
                 provider: "openai",
                 model: "gpt-4.1",
@@ -437,6 +452,7 @@
         window.onload = function() {
             updateSliders();
             syncAiApiConfig();
+            syncOverrideState();
             refreshStateJSON();
             checkBackendHealth();
             // Poll backend health every 5 seconds
@@ -476,8 +492,45 @@
 
             document.getElementById('hud-energy').innerText = `${state.energy}W`;
             document.getElementById('hud-lookahead').innerText = `${state.lookahead} STEPS`;
-            document.getElementById('hud-drift').innerText = `${state.drift}%`;
+            if (!state.override.radarDegradation) {
+                setHudStructuralDrift(state.telemetry.S_d ?? 0);
+            }
 
+            refreshStateJSON();
+        }
+
+        function setHudStructuralDrift(value, intercepted = false) {
+            const hud = document.getElementById('hud-sd');
+            if (!hud) return;
+            hud.innerText = intercepted ? "0.5" : formatTelemetryValue(value, 1);
+            hud.className = intercepted
+                ? "code-font text-red-400 font-bold tracking-widest text-base animate-pulse"
+                : "code-font text-emerald-400 font-bold tracking-widest text-base";
+        }
+
+        function syncOverrideState() {
+            const overrideInput = document.getElementById('override-radar-degradation');
+            const statusLabel = document.getElementById('override-status-label');
+            const active = overrideInput?.checked === true;
+            state.override.radarDegradation = active;
+
+            if (!statusLabel) return active;
+            if (active) {
+                statusLabel.innerText = "[ RADAR_INTERCEPTED ]";
+                statusLabel.className = "code-font text-[10px] text-red-400 font-bold animate-pulse";
+            } else {
+                statusLabel.innerText = "[ ADVERSARIAL STATE: NOMINAL ]";
+                statusLabel.className = "code-font text-[10px] text-slate-500 font-bold";
+                setHudStructuralDrift(state.telemetry.S_d ?? 0);
+            }
+            return active;
+        }
+
+        function applyRadarDegradationInterception() {
+            state.override.radarDegradation = true;
+            state.telemetry.S_d = 0.5;
+            setHudStructuralDrift(0.5, true);
+            document.getElementById('telemetry-sd').innerText = formatTelemetryValue(0.5);
             refreshStateJSON();
         }
 
@@ -593,6 +646,7 @@
             lines.push(`- structural_drift_delta_a: ${stringifyMarkdownValue(telemetry.delta_a)}`);
             lines.push(`- pruning_ratio: ${stringifyMarkdownValue(telemetry.pruning_percentage)}`);
             lines.push(`- stability_ratio_S_d: ${stringifyMarkdownValue(telemetry.S_d)}`);
+            lines.push(`- simulate_radar_failure: ${state.override.radarDegradation}`);
             lines.push("");
             lines.push("## System Audit Checkpoints");
             lines.push("");
@@ -662,7 +716,7 @@
             state.drift = runResult.delta_a;
 
             document.getElementById('hud-energy').innerText = `${state.energy}W`;
-            document.getElementById('hud-drift').innerText = `${formatTelemetryValue(runResult.delta_a, 2)}%`;
+            setHudStructuralDrift(runResult.S_d);
             document.getElementById('telemetry-ec').innerText = formatTelemetryValue(runResult.E_c);
             document.getElementById('telemetry-delta-a').innerText = formatTelemetryValue(runResult.delta_a);
             document.getElementById('telemetry-sd').innerText = formatTelemetryValue(runResult.S_d);
@@ -705,11 +759,16 @@
             }
         }
 
-        function addLog(message, prefix = "SYSTEM") {
+        function addLog(message, prefix = "SYSTEM", prepend = false) {
             const terminal = document.getElementById('terminal-feed');
             const logEntry = document.createElement('div');
             const timestamp = new Date().toISOString();
-            state.terminalLogs.push({ timestamp, prefix, message });
+            const logRecord = { timestamp, prefix, message };
+            if (prepend) {
+                state.terminalLogs.unshift(logRecord);
+            } else {
+                state.terminalLogs.push(logRecord);
+            }
             
             let colorClass = "text-slate-500";
             if (prefix === "TELEMETRY") colorClass = "text-emerald-400";
@@ -717,10 +776,16 @@
             if (prefix === "LH_VALIDATOR") colorClass = "text-blue-400";
             if (prefix === "RADAR") colorClass = "text-amber-400";
             if (prefix === "ERROR") colorClass = "text-red-400";
+            if (prefix === "ADVERSARIAL ALERT") colorClass = "text-red-400 font-bold";
 
             logEntry.innerHTML = `<span class="${colorClass}">[${prefix}]</span> ${message}`;
-            terminal.appendChild(logEntry);
-            terminal.scrollTop = terminal.scrollHeight;
+            if (prepend) {
+                terminal.prepend(logEntry);
+                terminal.scrollTop = 0;
+            } else {
+                terminal.appendChild(logEntry);
+                terminal.scrollTop = terminal.scrollHeight;
+            }
         }
 
         function focusLemming(id) {
@@ -767,9 +832,28 @@
         async function runIngestion() {
             const prompt = document.getElementById('target-prompt').value || state.target;
             const variance = document.getElementById('variance-slider').value;
+            const radarDegradationOverride = syncOverrideState();
             syncAiApiConfig();
 
             addLog(`Sovereign ingestion triggered for objective: "${prompt}"`, "SYSTEM");
+            if (radarDegradationOverride) {
+                applyRadarDegradationInterception();
+                addLog(
+                    `Manual state interception activated. Simulating LEM-04 degradation. Forcing structural drift parameter to Sd=0.5. [timestamp: ${new Date().toISOString()}]`,
+                    "ADVERSARIAL ALERT",
+                    true
+                );
+            }
+
+            const payload = {
+                target_prompt: prompt,
+                variance_threshold: parseFloat(variance),
+                lookahead_horizon: state.lookahead,
+                ai_provider: state.aiApi.provider,
+                ai_model: state.aiApi.model,
+                api_key: document.getElementById('ai-api-key').value.trim(),
+                simulate_radar_failure: radarDegradationOverride
+            };
 
             if (state.backendOnline) {
                 addLog("Sending payload parameters to local LangGraph FastAPI server...", "TELEMETRY");
@@ -777,20 +861,16 @@
                     const response = await fetch(`${getBackendBaseUrl()}/run`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            target_prompt: prompt,
-                            variance_threshold: parseFloat(variance),
-                            lookahead_horizon: state.lookahead,
-                            ai_provider: state.aiApi.provider,
-                            ai_model: state.aiApi.model,
-                            api_key: document.getElementById('ai-api-key').value.trim()
-                        })
+                        body: JSON.stringify(payload)
                     });
                     
                     if (response.ok) {
                         const runResult = await response.json();
                         addLog("LangGraph flow completed successfully. Parsing agent conversation traces:", "TELEMETRY");
                         updateMathematicalTelemetry(runResult);
+                        if (radarDegradationOverride) {
+                            applyRadarDegradationInterception();
+                        }
                         
                         runResult.logs.forEach(log => {
                             addLog(log, "TELEMETRY");
