@@ -24,8 +24,10 @@ Your job is to:
    - Constraints (explicit + inferred)
    - Metrics_Of_Success
    - Lookahead_Horizon
-3. Route work to the appropriate specialist nodes.
-4. Never generate final strategic output yourself unless the human has explicitly authorised it.
+3. If evidence_context is present, prepend the payload with:
+   [VERIFIED EVIDENCE ATTACHED: COMPILING BOUNDARIES]
+4. Route work to the appropriate specialist nodes.
+5. Never generate final strategic output yourself unless the human has explicitly authorised it.
 
 You are an API gateway and mission controller, not a conversational partner.""",
     "LEM-02": "\n".join(
@@ -40,6 +42,7 @@ You are an API gateway and mission controller, not a conversational partner.""",
             "- Focus on systemic hooks, leverage points, phase shifts, creative workarounds, and second/third/fourth-order effects.",
             "- Be weird if weirdness creates advantage.",
             "- Ground-up synthesis is preferred over applying existing frameworks.",
+            "- If evidence_context is present, tactical layer options MUST cross-reference that evidence directly instead of inventing unanchored theoretical market positions.",
             "",
             "Output raw strategic layers only. Do not explain or justify unless asked.",
         ]
@@ -84,6 +87,7 @@ class LemmingState(TypedDict):
 
     run_id: str
     target_prompt: str
+    evidence_context: str
     variance_threshold: float
     lookahead_horizon: int
     current_node: str
@@ -129,6 +133,7 @@ class IngestionRequest(BaseModel):
     """Request schema for the API."""
 
     target_prompt: str = Field(min_length=1)
+    evidence_context: str = ""
     variance_threshold: float = Field(ge=0.0)
     lookahead_horizon: int = Field(ge=1)
     api_key: str = ""
@@ -143,8 +148,15 @@ def _mark_node(state: LemmingState, node_id: str) -> None:
     state["visited_nodes"].append(node_id)
 
 
+def _compact_evidence_context(evidence_context: str, max_chars: int = 420) -> str:
+    compacted = " ".join(evidence_context.split())
+    if len(compacted) <= max_chars:
+        return compacted
+    return f"{compacted[:max_chars].rstrip()}..."
+
+
 def _base_constraints(state: LemmingState) -> List[str]:
-    return [
+    constraints = [
         "Human Conductor remains final authority.",
         "20W constraint simulation applies.",
         f"Variance threshold: {state['variance_threshold']}.",
@@ -154,6 +166,13 @@ def _base_constraints(state: LemmingState) -> List[str]:
         f"AI API key configured: {state['ai_api_config']['api_key_configured']}.",
         state["node_bias_profiles"]["LEM-01"],
     ]
+    evidence_context = state["evidence_context"].strip()
+    if evidence_context:
+        constraints.append(
+            "Evidence Block attached; node outputs must preserve traceability to the provided context."
+        )
+        constraints.append(f"Evidence excerpt: {_compact_evidence_context(evidence_context)}")
+    return constraints
 
 
 def lemming_04_radar(state: LemmingState) -> LemmingState:
@@ -215,13 +234,23 @@ def lemming_01_supervisor(state: LemmingState) -> LemmingState:
     _mark_node(state, "LEM-01")
     state["logs"].append("[SUPERVISOR] Converting raw intent into JSON engineering payload.")
 
+    evidence_context = state["evidence_context"].strip()
+    core_target = state["target_prompt"].strip()
+    payload_header = None
+    if evidence_context:
+        payload_header = "[VERIFIED EVIDENCE ATTACHED: COMPILING BOUNDARIES]"
+        state["logs"].append("[SUPERVISOR] Evidence Block detected. Compiling payload boundaries.")
+
     payload = {
-        "Core_Target": state["target_prompt"].strip(),
+        "Payload_Header": payload_header,
+        "Core_Target": f"{payload_header}\n{core_target}" if payload_header else core_target,
+        "Evidence_Context": evidence_context,
         "Constraints": _base_constraints(state),
         "Metrics_Of_Success": [
             "Output preserves human sovereignty.",
             "Strategic layers match the requested lookahead horizon.",
             "Validator returns ownership, dependency, and risk structure.",
+            "Evidence-backed runs preserve traceability to the attached context.",
         ],
         "Lookahead_Horizon": state["lookahead_horizon"],
     }
@@ -243,13 +272,23 @@ def lemming_02_rh_core(state: LemmingState) -> LemmingState:
     state["logs"].append("[RH_CORE] Neil Strategic Bias Profile loaded into RH state.")
 
     core_target = state["supervisor_payload"].get("Core_Target", state["target_prompt"])
-    layers = [
-        (
-            f"Layer {index}: convert '{core_target}' into a leverage-point move "
-            f"that preserves Conductor sovereignty at horizon depth {index}."
-        )
-        for index in range(1, horizon + 1)
-    ]
+    evidence_context = state["evidence_context"].strip()
+    evidence_excerpt = _compact_evidence_context(evidence_context)
+    if evidence_context:
+        state["logs"].append("[RH_CORE] Evidence Block active. Anchoring layer generation to provided context.")
+    layers = []
+    for index in range(1, horizon + 1):
+        if evidence_context:
+            layer = (
+                f"Layer {index}: cross-reference evidence '{evidence_excerpt}' against '{core_target}' "
+                f"and produce an anchored leverage-point move at horizon depth {index}."
+            )
+        else:
+            layer = (
+                f"Layer {index}: convert '{core_target}' into a leverage-point move "
+                f"that preserves Conductor sovereignty at horizon depth {index}."
+            )
+        layers.append(layer)
     state["strategic_layers"] = layers
     state["agent_dialogue"].append(
         {
@@ -364,6 +403,7 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
     return {
         "run_id": str(uuid.uuid4()),
         "target_prompt": request.target_prompt,
+        "evidence_context": request.evidence_context.rstrip(),
         "variance_threshold": request.variance_threshold,
         "lookahead_horizon": request.lookahead_horizon,
         "current_node": "ENTRY",

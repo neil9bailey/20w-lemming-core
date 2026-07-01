@@ -169,6 +169,13 @@
                               class="w-full h-20 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs code-font text-white focus:outline-none focus:border-cyan-500 transition-colors resize-none"></textarea>
                 </div>
 
+                <!-- Evidence Block to anchor the substrate against external material -->
+                <div>
+                    <label class="block text-xs text-slate-400 font-semibold mb-1">EVIDENCE BLOCK:</label>
+                    <textarea id="evidence-context" placeholder="[ INJECT EXTERNAL EVIDENCE BASE / RACI SCHEMAS / AUDIT DATA ]"
+                              class="w-full h-20 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-xs code-font text-cyan-100 focus:outline-none focus:border-cyan-500 transition-colors resize-none"></textarea>
+                </div>
+
                 <!-- Interactive Sliders for Core Variables -->
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
@@ -795,6 +802,7 @@
             if (prefix === "RH_CORE") colorClass = "text-purple-400";
             if (prefix === "LH_VALIDATOR") colorClass = "text-blue-400";
             if (prefix === "RADAR") colorClass = "text-amber-400";
+            if (prefix === "HARVESTER") colorClass = "text-cyan-300 font-bold";
             if (prefix === "ERROR") colorClass = "text-red-400";
             if (prefix === "ADVERSARIAL ALERT") colorClass = "text-red-400 font-bold";
 
@@ -851,11 +859,19 @@
 
         async function runIngestion() {
             const prompt = document.getElementById('target-prompt').value || state.target;
+            const evidenceContext = document.getElementById('evidence-context').value.trimEnd();
             const variance = document.getElementById('variance-slider').value;
             const radarDegradationOverride = syncOverrideState();
             syncAiApiConfig();
 
             addLog(`Sovereign ingestion triggered for objective: "${prompt}"`, "SYSTEM");
+            if (evidenceContext.trim().length > 0) {
+                addLog(
+                    "Active evidence harvest payload locked. Streaming context down to the asymmetric substrate graph.",
+                    "HARVESTER",
+                    true
+                );
+            }
             if (radarDegradationOverride) {
                 applyRadarDegradationInterception();
                 addLog(
@@ -867,6 +883,7 @@
 
             const payload = {
                 target_prompt: prompt,
+                evidence_context: evidenceContext,
                 variance_threshold: parseFloat(variance),
                 lookahead_horizon: state.lookahead,
                 ai_provider: state.aiApi.provider,
