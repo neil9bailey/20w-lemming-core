@@ -82,6 +82,8 @@ You are an API gateway and mission controller, not a conversational partner.""",
 }
 
 TOTAL_LEMMING_NODES = 4
+MAX_CONTEXT_CHARS = 12000
+CONTEXT_TRUNCATION_FLAG = "... [CONTEXT TRUNCATED BY SUBSTRATE BUDGET GUARD]"
 
 
 class LemmingState(TypedDict):
@@ -104,6 +106,10 @@ class LemmingState(TypedDict):
     historical_context: List[Dict[str, Any]]
     max_history_relevance_score: float
     governance_audit_trail: Dict[str, Any]
+    context_utilization_ratio: float
+    total_payload_chars: int
+    max_context_chars: int
+    context_truncated: bool
     simulate_radar_failure: bool
     intercept_triggered: bool
     supervisor_payload: Dict[str, Any]
@@ -176,6 +182,56 @@ def _compact_evidence_context(evidence_context: str, max_chars: int = 420) -> st
     return f"{compacted[:max_chars].rstrip()}..."
 
 
+def _truncate_text(value: str, max_chars: int) -> tuple[str, bool]:
+    if len(value) <= max_chars:
+        return value, False
+    if max_chars <= len(CONTEXT_TRUNCATION_FLAG):
+        return CONTEXT_TRUNCATION_FLAG[:max_chars], True
+    return f"{value[:max_chars - len(CONTEXT_TRUNCATION_FLAG)].rstrip()}{CONTEXT_TRUNCATION_FLAG}", True
+
+
+def _history_payload_chars(historical_context: List[Dict[str, Any]]) -> int:
+    return len(json.dumps(historical_context, ensure_ascii=False))
+
+
+def _balance_context_budget(
+    target_prompt: str,
+    evidence_context: str,
+    historical_context: List[Dict[str, Any]],
+) -> tuple[str, str, List[Dict[str, Any]], int, float, bool]:
+    total_chars = len(target_prompt) + len(evidence_context) + _history_payload_chars(historical_context)
+    if total_chars <= MAX_CONTEXT_CHARS:
+        return target_prompt, evidence_context, historical_context, total_chars, round(total_chars / MAX_CONTEXT_CHARS, 4), False
+
+    target_budget = int(MAX_CONTEXT_CHARS * 0.4)
+    remaining_budget = MAX_CONTEXT_CHARS - target_budget
+    evidence_budget = int(remaining_budget * 0.4)
+    history_budget = MAX_CONTEXT_CHARS - target_budget - evidence_budget
+
+    balanced_target, target_truncated = _truncate_text(target_prompt, target_budget)
+    balanced_evidence, evidence_truncated = _truncate_text(evidence_context, evidence_budget)
+
+    balanced_history: List[Dict[str, Any]] = []
+    history_truncated = bool(historical_context)
+    for row in historical_context:
+        candidate_rows = [*balanced_history, row]
+        if _history_payload_chars(candidate_rows) <= history_budget:
+            balanced_history = candidate_rows
+        else:
+            history_truncated = True
+            break
+
+    if history_truncated and balanced_history:
+        oldest_retained = balanced_history[-1]
+        oldest_retained["core_target"] = (
+            f"{str(oldest_retained.get('core_target', '')).rstrip()}{CONTEXT_TRUNCATION_FLAG}"
+        )
+
+    return balanced_target, balanced_evidence, balanced_history, MAX_CONTEXT_CHARS, 1.0, (
+        target_truncated or evidence_truncated or history_truncated
+    )
+
+
 def _base_constraints(state: LemmingState) -> List[str]:
     constraints = [
         "Human Conductor remains final authority.",
@@ -196,6 +252,10 @@ def _base_constraints(state: LemmingState) -> List[str]:
     if state["historical_context"]:
         constraints.append(
             f"Dynamic history retrieval active; max relevance score: {state['max_history_relevance_score']:.6f}."
+        )
+    if state["context_truncated"]:
+        constraints.append(
+            f"Context budget guard active at {state['total_payload_chars']} / {state['max_context_chars']} chars."
         )
     return constraints
 
@@ -438,20 +498,37 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
     run_id = str(uuid.uuid4())
     bias_profile = load_bias_profile()
     historical_context = load_successful_runs(target_prompt=request.target_prompt, limit=3)
+    (
+        target_prompt,
+        evidence_context,
+        historical_context,
+        total_payload_chars,
+        context_utilization_ratio,
+        context_truncated,
+    ) = _balance_context_budget(
+        target_prompt=request.target_prompt,
+        evidence_context=request.evidence_context.rstrip(),
+        historical_context=historical_context,
+    )
     max_history_relevance_score = max(
         (float(row.get("relevance_score", 0.0)) for row in historical_context),
         default=0.0,
     )
     ai_provider = request.ai_provider.strip() or "openai"
     ai_model = request.ai_model.strip() or "gpt-4.1"
+    logs = ["Initialize trace through 20W multi-agent engine..."]
+    if context_truncated:
+        logs.append(
+            f"[BUDGET] Context budget guard activated. Payload capped at {MAX_CONTEXT_CHARS} characters."
+        )
     return {
         "run_id": run_id,
-        "target_prompt": request.target_prompt,
-        "evidence_context": request.evidence_context.rstrip(),
+        "target_prompt": target_prompt,
+        "evidence_context": evidence_context,
         "variance_threshold": request.variance_threshold,
         "lookahead_horizon": request.lookahead_horizon,
         "current_node": "ENTRY",
-        "logs": ["Initialize trace through 20W multi-agent engine..."],
+        "logs": logs,
         "agent_dialogue": [],
         "drift": 0.0,
         "recalibrated": False,
@@ -473,6 +550,10 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
             "transition_count": 0,
             "steps": [],
         },
+        "context_utilization_ratio": context_utilization_ratio,
+        "total_payload_chars": total_payload_chars,
+        "max_context_chars": MAX_CONTEXT_CHARS,
+        "context_truncated": context_truncated,
         "simulate_radar_failure": request.simulate_radar_failure,
         "intercept_triggered": False,
         "supervisor_payload": {},

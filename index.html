@@ -96,6 +96,10 @@
                 <span class="text-xs text-slate-500 font-medium">STRUCTURAL DRIFT:</span>
                 <span id="hud-sd" class="code-font text-emerald-400 font-bold tracking-widest text-base">0.0</span>
             </div>
+            <div class="bg-[#0d1117] border border-[#21262d] rounded-lg px-4 py-2 flex items-center gap-3">
+                <span class="text-xs text-slate-500 font-medium">CONTEXT LOAD:</span>
+                <span id="hud-context-load" class="code-font text-cyan-400 font-bold tracking-widest text-base">0.00</span>
+            </div>
         </div>
     </header>
 
@@ -459,6 +463,12 @@
                 transition_count: 0,
                 steps: []
             },
+            contextBudget: {
+                max_context_chars: 12000,
+                total_payload_chars: 0,
+                context_utilization_ratio: 0,
+                context_truncated: false
+            },
             lastRunExport: null,
             lemmingStates: {
                 1: { title: "LEM-01 SUPERVISOR", status: "ACTIVE", pulse: "cyan", detail: "Intent Filtering activated. Clean routing bounds." },
@@ -619,6 +629,7 @@
                     "transition_count": state.governanceAuditTrail.transition_count || 0,
                     "steps": state.governanceAuditTrail.steps || []
                 },
+                "context_budget": state.contextBudget,
                 "telemetry_power": `${state.energy}W`,
                 "lookahead_depth": state.lookahead,
                 "current_sovereign_intent": document.getElementById('target-prompt').value || state.target,
@@ -670,6 +681,16 @@
             refreshStateJSON();
         }
 
+        function setHudContextLoad(value) {
+            const ratio = typeof value === "number" ? value : 0;
+            const hud = document.getElementById('hud-context-load');
+            if (!hud) return;
+            hud.innerText = ratio.toFixed(2);
+            hud.className = ratio >= 0.85
+                ? "code-font text-red-500 font-bold tracking-widest text-base animate-pulse"
+                : "code-font text-cyan-400 font-bold tracking-widest text-base";
+        }
+
         function buildRunMarkdownExport(runResult = null) {
             const lines = [];
             const telemetry = state.telemetry;
@@ -697,6 +718,13 @@
             lines.push(`- pruning_percentage: ${stringifyMarkdownValue(telemetry.pruning_percentage)}`);
             lines.push(`- autonomous_decisions: ${stringifyMarkdownValue(telemetry.autonomous_decisions)}`);
             lines.push(`- total_decisions: ${stringifyMarkdownValue(telemetry.total_decisions)}`);
+            lines.push("");
+            lines.push("## Context Budget Telemetry");
+            lines.push("");
+            lines.push(`- MAX_CONTEXT_CHARS: ${stringifyMarkdownValue(state.contextBudget.max_context_chars)}`);
+            lines.push(`- total_payload_chars: ${stringifyMarkdownValue(state.contextBudget.total_payload_chars)}`);
+            lines.push(`- context_utilization_ratio: ${stringifyMarkdownValue(state.contextBudget.context_utilization_ratio)}`);
+            lines.push(`- context_truncated: ${stringifyMarkdownValue(state.contextBudget.context_truncated)}`);
             lines.push("");
             lines.push("## Governance Audit Trail");
             lines.push("");
@@ -794,6 +822,13 @@
             document.getElementById('telemetry-autonomous').innerText = runResult.autonomous_decisions;
             document.getElementById('telemetry-total').innerText = runResult.total_decisions;
 
+            state.contextBudget = {
+                max_context_chars: runResult.max_context_chars,
+                total_payload_chars: runResult.total_payload_chars,
+                context_utilization_ratio: runResult.context_utilization_ratio,
+                context_truncated: runResult.context_truncated
+            };
+            setHudContextLoad(runResult.context_utilization_ratio);
             renderGovernanceAuditTrail(runResult.governance_audit_trail);
             state.lastRunExport = buildRunMarkdownExport(runResult);
             refreshStateJSON();
