@@ -33,6 +33,20 @@ def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     return connection
 
 
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_sql: Dict[str, str],
+) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    for column_name, ddl in column_sql.items():
+        if column_name not in existing_columns:
+            connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+
+
 def initialize_memory(db_path: Path = DB_PATH) -> None:
     """Create the v1.2 memory schema and seed baseline bias vectors."""
     with _connect(db_path) as connection:
@@ -47,9 +61,21 @@ def initialize_memory(db_path: Path = DB_PATH) -> None:
                 E_c REAL NOT NULL,
                 delta_a REAL NOT NULL,
                 S_d REAL NOT NULL,
+                velocity_ms REAL NOT NULL DEFAULT 0.0,
+                intercept_triggered INTEGER NOT NULL DEFAULT 0,
+                raw_prompt_length INTEGER NOT NULL DEFAULT 0,
                 success_flag INTEGER NOT NULL
             )
             """
+        )
+        _ensure_columns(
+            connection,
+            "runs",
+            {
+                "velocity_ms": "velocity_ms REAL NOT NULL DEFAULT 0.0",
+                "intercept_triggered": "intercept_triggered INTEGER NOT NULL DEFAULT 0",
+                "raw_prompt_length": "raw_prompt_length INTEGER NOT NULL DEFAULT 0",
+            },
         )
         connection.execute(
             """
@@ -65,6 +91,15 @@ def initialize_memory(db_path: Path = DB_PATH) -> None:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_success_timestamp ON runs(success_flag, timestamp)"
+        )
+        connection.execute(
+            """
+            CREATE VIEW IF NOT EXISTS cognitive_history AS
+            SELECT run_id, timestamp, core_target, variance_threshold, lookahead_horizon,
+                   E_c, delta_a, S_d, velocity_ms, intercept_triggered, raw_prompt_length,
+                   success_flag
+            FROM runs
+            """
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_bias_strength ON bias_vectors(strength DESC)"
@@ -83,7 +118,8 @@ def load_successful_runs(limit: int = 5, db_path: Path = DB_PATH) -> List[Dict[s
         rows = connection.execute(
             """
             SELECT run_id, timestamp, core_target, variance_threshold, lookahead_horizon,
-                   E_c, delta_a, S_d, success_flag
+                   E_c, delta_a, S_d, velocity_ms, intercept_triggered, raw_prompt_length,
+                   success_flag
             FROM runs
             WHERE success_flag = 1
             ORDER BY timestamp DESC
@@ -138,30 +174,44 @@ def load_bias_profile(db_path: Path = DB_PATH) -> str:
     )
 
 
-def record_run(state: Dict[str, Any], db_path: Path = DB_PATH) -> Optional[str]:
+def log_run(state: Dict[str, Any], db_path: Path = DB_PATH) -> Optional[str]:
     run_id = state.get("run_id")
     if not run_id:
         return None
 
     timestamp = datetime.now(timezone.utc).isoformat()
+    target_prompt = str(state.get("target_prompt", ""))
     with _connect(db_path) as connection:
+        _ensure_columns(
+            connection,
+            "runs",
+            {
+                "velocity_ms": "velocity_ms REAL NOT NULL DEFAULT 0.0",
+                "intercept_triggered": "intercept_triggered INTEGER NOT NULL DEFAULT 0",
+                "raw_prompt_length": "raw_prompt_length INTEGER NOT NULL DEFAULT 0",
+            },
+        )
         connection.execute(
             """
             INSERT OR REPLACE INTO runs (
                 run_id, timestamp, core_target, variance_threshold, lookahead_horizon,
-                E_c, delta_a, S_d, success_flag
+                E_c, delta_a, S_d, velocity_ms, intercept_triggered, raw_prompt_length,
+                success_flag
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
                 timestamp,
-                state.get("target_prompt", ""),
+                target_prompt,
                 float(state.get("variance_threshold", 0.0)),
                 int(state.get("lookahead_horizon", 0)),
                 float(state.get("E_c", 0.0)),
                 float(state.get("delta_a", 0.0)),
                 float(state.get("S_d", 0.0)),
+                float(state.get("velocity_ms", 0.0)),
+                1 if state.get("intercept_triggered", False) else 0,
+                len(target_prompt),
                 1 if state.get("success_flag", True) else 0,
             ),
         )
@@ -179,3 +229,7 @@ def record_run(state: Dict[str, Any], db_path: Path = DB_PATH) -> Optional[str]:
         )
 
     return str(run_id)
+
+
+def record_run(state: Dict[str, Any], db_path: Path = DB_PATH) -> Optional[str]:
+    return log_run(state, db_path=db_path)

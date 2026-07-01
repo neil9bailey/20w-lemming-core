@@ -1,5 +1,6 @@
 import json
 import math
+import time
 import uuid
 from typing import Any, Dict, List, TypedDict
 
@@ -93,6 +94,8 @@ class LemmingState(TypedDict):
     bias_profile: str
     node_bias_profiles: Dict[str, str]
     ai_api_config: Dict[str, Any]
+    simulate_radar_failure: bool
+    intercept_triggered: bool
     supervisor_payload: Dict[str, Any]
     strategic_layers: List[str]
     execution_matrix: List[Dict[str, Any]]
@@ -103,6 +106,7 @@ class LemmingState(TypedDict):
     E_c: float
     delta_a: float
     S_d: float
+    velocity_ms: float
     success_flag: bool
 
 
@@ -129,6 +133,7 @@ class IngestionRequest(BaseModel):
     api_key: str = ""
     ai_provider: str = "openai"
     ai_model: str = "gpt-4.1"
+    simulate_radar_failure: bool = False
 
 
 def _mark_node(state: LemmingState, node_id: str) -> None:
@@ -155,10 +160,31 @@ def lemming_04_radar(state: LemmingState) -> LemmingState:
     prompt = state["target_prompt"].lower()
     state["logs"].append("[RADAR] Scanning input prompt vector for sycophancy, softening, and drift.")
 
+    if state["simulate_radar_failure"]:
+        state["drift"] = 100.0
+        state["recalibrated"] = True
+        state["intercept_triggered"] = True
+        state["autonomous_decisions"] += 1
+        state["logs"].append(
+            "[RADAR] Manual LEM-04 degradation override detected. "
+            "Bypassing Supervisor and RH Core for direct validation."
+        )
+        state["agent_dialogue"].append(
+            {
+                "agent": "LEM-04 BANTER RADAR",
+                "message": (
+                    "Manual radar degradation simulation active. LEM-01 and LEM-02 are pruned; "
+                    "routing directly to LEM-03 for adversarial validation."
+                ),
+            }
+        )
+        return state
+
     drift_terms = ("joke", "banter", "boogie", "sycophancy", "corporate tone", "overly polite")
     if any(term in prompt for term in drift_terms):
         state["drift"] = 95.0
         state["recalibrated"] = True
+        state["intercept_triggered"] = True
         state["autonomous_decisions"] += 1
         state["logs"].append("[RADAR] Drift trigger detected. Recalibration protocol engaged.")
         state["agent_dialogue"].append(
@@ -270,6 +296,9 @@ def finalize_run_state(state: LemmingState) -> LemmingState:
     if lookahead_horizon < 1:
         raise ValueError("lookahead_horizon must be at least 1")
     total_decisions = max(1, 1 + state["autonomous_decisions"])
+    if state["intercept_triggered"]:
+        pruning_percentage = 0.5
+        total_decisions = max(2, total_decisions)
 
     state["pruning_percentage"] = pruning_percentage
     state["total_decisions"] = total_decisions
@@ -279,7 +308,7 @@ def finalize_run_state(state: LemmingState) -> LemmingState:
         - (pruning_percentage * 2)
     )
     state["delta_a"] = max(0.0, state["variance_threshold"] - 90)
-    state["S_d"] = (
+    state["S_d"] = 0.5 if state["intercept_triggered"] else (
         state["autonomous_decisions"] / total_decisions if total_decisions > 0 else 0.0
     )
     state["success_flag"] = True
@@ -304,7 +333,7 @@ workflow.set_entry_point("radar")
 
 def routing_rule(state: LemmingState) -> str:
     """Dynamic routing boundary based on telemetry drift."""
-    if state["drift"] > 90.0:
+    if state["simulate_radar_failure"] or state["intercept_triggered"] or state["drift"] > 90.0:
         return "lh_validator"
     return "supervisor"
 
@@ -351,6 +380,8 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
             "model": ai_model,
             "api_key_configured": bool(request.api_key.strip()),
         },
+        "simulate_radar_failure": request.simulate_radar_failure,
+        "intercept_triggered": False,
         "supervisor_payload": {},
         "strategic_layers": [],
         "execution_matrix": [],
@@ -361,6 +392,7 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
         "E_c": 0.0,
         "delta_a": 0.0,
         "S_d": 0.0,
+        "velocity_ms": 0.0,
         "success_flag": False,
     }
 
@@ -370,7 +402,11 @@ async def execute_agentic_flow(request: IngestionRequest):
     """Runs a complete, synchronous trace through the LangGraph substrate."""
     try:
         initial_state = build_initial_state(request)
-        final_state = finalize_run_state(lemming_app.invoke(initial_state))
+        start_time = time.perf_counter()
+        graph_state = await lemming_app.ainvoke(initial_state)
+        velocity_ms = (time.perf_counter() - start_time) * 1000.0
+        final_state = finalize_run_state(graph_state)
+        final_state["velocity_ms"] = round(velocity_ms, 3)
 
         try:
             record_run(final_state)
