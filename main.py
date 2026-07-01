@@ -1,8 +1,10 @@
 import json
+import hashlib
 import math
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, TypedDict
 
 import uvicorn
@@ -101,6 +103,7 @@ class LemmingState(TypedDict):
     ai_api_config: Dict[str, Any]
     historical_context: List[Dict[str, Any]]
     max_history_relevance_score: float
+    governance_audit_trail: Dict[str, Any]
     simulate_radar_failure: bool
     intercept_triggered: bool
     supervisor_payload: Dict[str, Any]
@@ -150,6 +153,22 @@ def _mark_node(state: LemmingState, node_id: str) -> None:
     state["visited_nodes"].append(node_id)
 
 
+def _record_audit_step(state: LemmingState, node_id: str, response_text: str) -> None:
+    audit_trail = state["governance_audit_trail"]
+    steps = audit_trail.setdefault("steps", [])
+    payload_length = len(response_text)
+    signature_material = f"{node_id}:{payload_length}:{state['run_id']}".encode("utf-8")
+    step = {
+        "step_index": len(steps) + 1,
+        "node_id": node_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "payload_length_chars": payload_length,
+        "node_signature_hash": hashlib.sha256(signature_material).hexdigest(),
+    }
+    steps.append(step)
+    audit_trail["transition_count"] = len(steps)
+
+
 def _compact_evidence_context(evidence_context: str, max_chars: int = 420) -> str:
     compacted = " ".join(evidence_context.split())
     if len(compacted) <= max_chars:
@@ -196,15 +215,17 @@ def lemming_04_radar(state: LemmingState) -> LemmingState:
             "[RADAR] Manual LEM-04 degradation override detected. "
             "Bypassing Supervisor and RH Core for direct validation."
         )
+        response_message = (
+            "Manual radar degradation simulation active. LEM-01 and LEM-02 are pruned; "
+            "routing directly to LEM-03 for adversarial validation."
+        )
         state["agent_dialogue"].append(
             {
                 "agent": "LEM-04 BANTER RADAR",
-                "message": (
-                    "Manual radar degradation simulation active. LEM-01 and LEM-02 are pruned; "
-                    "routing directly to LEM-03 for adversarial validation."
-                ),
+                "message": response_message,
             }
         )
+        _record_audit_step(state, "LEM-04", response_message)
         return state
 
     drift_terms = ("joke", "banter", "boogie", "sycophancy", "corporate tone", "overly polite")
@@ -214,24 +235,27 @@ def lemming_04_radar(state: LemmingState) -> LemmingState:
         state["intercept_triggered"] = True
         state["autonomous_decisions"] += 1
         state["logs"].append("[RADAR] Drift trigger detected. Recalibration protocol engaged.")
+        response_message = (
+            "Reset the tone. Strip the fluff, protect the Conductor's sovereignty, "
+            "and route directly to validation."
+        )
         state["agent_dialogue"].append(
             {
                 "agent": "LEM-04 BANTER RADAR",
-                "message": (
-                    "Reset the tone. Strip the fluff, protect the Conductor's sovereignty, "
-                    "and route directly to validation."
-                ),
+                "message": response_message,
             }
         )
     else:
         state["drift"] = 0.0
         state["logs"].append("[RADAR] No recalibration trigger detected. Routing to Supervisor.")
+        response_message = "Trace is sharp enough. Forwarding vector to Supervisor."
         state["agent_dialogue"].append(
             {
                 "agent": "LEM-04 BANTER RADAR",
-                "message": "Trace is sharp enough. Forwarding vector to Supervisor.",
+                "message": response_message,
             }
         )
+    _record_audit_step(state, "LEM-04", response_message)
     return state
 
 
@@ -263,12 +287,14 @@ def lemming_01_supervisor(state: LemmingState) -> LemmingState:
         "Lookahead_Horizon": state["lookahead_horizon"],
     }
     state["supervisor_payload"] = payload
+    response_message = json.dumps(payload, ensure_ascii=False)
     state["agent_dialogue"].append(
         {
             "agent": "LEM-01 SOVEREIGN SUPERVISOR",
-            "message": json.dumps(payload, ensure_ascii=False),
+            "message": response_message,
         }
     )
+    _record_audit_step(state, "LEM-01", response_message)
     return state
 
 
@@ -298,12 +324,14 @@ def lemming_02_rh_core(state: LemmingState) -> LemmingState:
             )
         layers.append(layer)
     state["strategic_layers"] = layers
+    response_message = "\n".join(layers)
     state["agent_dialogue"].append(
         {
             "agent": "LEM-02 RH CORE",
-            "message": "\n".join(layers),
+            "message": response_message,
         }
     )
+    _record_audit_step(state, "LEM-02", response_message)
     return state
 
 
@@ -328,12 +356,14 @@ def lemming_03_lh_validator(state: LemmingState) -> LemmingState:
         for index, layer in enumerate(layers, start=1)
     ]
     state["execution_matrix"] = matrix
+    response_message = json.dumps(matrix, ensure_ascii=False)
     state["agent_dialogue"].append(
         {
             "agent": "LEM-03 LH VALIDATOR",
-            "message": json.dumps(matrix, ensure_ascii=False),
+            "message": response_message,
         }
     )
+    _record_audit_step(state, "LEM-03", response_message)
     return state
 
 
@@ -405,6 +435,7 @@ lemming_app = workflow.compile()
 
 
 def build_initial_state(request: IngestionRequest) -> LemmingState:
+    run_id = str(uuid.uuid4())
     bias_profile = load_bias_profile()
     historical_context = load_successful_runs(target_prompt=request.target_prompt, limit=3)
     max_history_relevance_score = max(
@@ -414,7 +445,7 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
     ai_provider = request.ai_provider.strip() or "openai"
     ai_model = request.ai_model.strip() or "gpt-4.1"
     return {
-        "run_id": str(uuid.uuid4()),
+        "run_id": run_id,
         "target_prompt": request.target_prompt,
         "evidence_context": request.evidence_context.rstrip(),
         "variance_threshold": request.variance_threshold,
@@ -437,6 +468,11 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
         },
         "historical_context": historical_context,
         "max_history_relevance_score": max_history_relevance_score,
+        "governance_audit_trail": {
+            "run_id": run_id,
+            "transition_count": 0,
+            "steps": [],
+        },
         "simulate_radar_failure": request.simulate_radar_failure,
         "intercept_triggered": False,
         "supervisor_payload": {},

@@ -219,6 +219,12 @@
                         <i class="fa-solid fa-bolt"></i> BANTER INJECTOR
                     </button>
                 </div>
+                <details id="compliance-audit-panel" open class="border border-emerald-500/20 bg-emerald-500/5 rounded-lg p-4">
+                    <summary class="cursor-pointer text-xs font-bold text-emerald-300 uppercase tracking-widest flex items-center gap-2">
+                        <i class="fa-solid fa-shield-halved"></i> Compliance Audit Trail
+                    </summary>
+                    <pre id="compliance-audit-output" class="code-font text-[11px] text-emerald-200 leading-relaxed mt-3 max-h-[180px] overflow-y-auto whitespace-pre-wrap">No governance audit trail captured.</pre>
+                </details>
             </div>
 
             <!-- Lemming Telemetry Cards -->
@@ -449,6 +455,10 @@
                 autonomous_decisions: 0,
                 total_decisions: 0
             },
+            governanceAuditTrail: {
+                transition_count: 0,
+                steps: []
+            },
             lastRunExport: null,
             lemmingStates: {
                 1: { title: "LEM-01 SUPERVISOR", status: "ACTIVE", pulse: "cyan", detail: "Intent Filtering activated. Clean routing bounds." },
@@ -605,6 +615,10 @@
                     "api_key_configured": state.aiApi.keyConfigured
                 },
                 "mathematical_telemetry": state.telemetry,
+                "governance_audit_trail": {
+                    "transition_count": state.governanceAuditTrail.transition_count || 0,
+                    "steps": state.governanceAuditTrail.steps || []
+                },
                 "telemetry_power": `${state.energy}W`,
                 "lookahead_depth": state.lookahead,
                 "current_sovereign_intent": document.getElementById('target-prompt').value || state.target,
@@ -638,9 +652,28 @@
             return `[LEM-XX] ${agentName || "Unknown Agent"}`;
         }
 
+        function formatGovernanceAuditTrail(auditTrail = null) {
+            const steps = auditTrail?.steps || [];
+            if (!steps.length) return "No governance audit trail captured.";
+            return steps.map((step) => {
+                const signature = step.node_signature_hash || "missing";
+                return `[STEP ${step.step_index}] [${step.node_id}] Signature: SHA256:${signature} [CHARS: ${step.payload_length_chars}] [UTC: ${step.timestamp}]`;
+            }).join("\n");
+        }
+
+        function renderGovernanceAuditTrail(auditTrail = null) {
+            state.governanceAuditTrail = auditTrail || { transition_count: 0, steps: [] };
+            const output = document.getElementById('compliance-audit-output');
+            if (output) {
+                output.innerText = formatGovernanceAuditTrail(state.governanceAuditTrail);
+            }
+            refreshStateJSON();
+        }
+
         function buildRunMarkdownExport(runResult = null) {
             const lines = [];
             const telemetry = state.telemetry;
+            const auditTrail = runResult?.governance_audit_trail || state.governanceAuditTrail;
             const terminalSnapshot = state.terminalLogs.map((entry) => {
                 return `[${entry.timestamp}] [${entry.prefix}] ${entry.message}`;
             });
@@ -664,6 +697,16 @@
             lines.push(`- pruning_percentage: ${stringifyMarkdownValue(telemetry.pruning_percentage)}`);
             lines.push(`- autonomous_decisions: ${stringifyMarkdownValue(telemetry.autonomous_decisions)}`);
             lines.push(`- total_decisions: ${stringifyMarkdownValue(telemetry.total_decisions)}`);
+            lines.push("");
+            lines.push("## Governance Audit Trail");
+            lines.push("");
+            lines.push("```text");
+            lines.push(formatGovernanceAuditTrail(auditTrail));
+            lines.push("```");
+            lines.push("");
+            lines.push("```json");
+            lines.push(stringifyMarkdownValue(auditTrail));
+            lines.push("```");
             lines.push("");
             lines.push("## Structural Drift Variables");
             lines.push("");
@@ -751,6 +794,7 @@
             document.getElementById('telemetry-autonomous').innerText = runResult.autonomous_decisions;
             document.getElementById('telemetry-total').innerText = runResult.total_decisions;
 
+            renderGovernanceAuditTrail(runResult.governance_audit_trail);
             state.lastRunExport = buildRunMarkdownExport(runResult);
             refreshStateJSON();
         }
