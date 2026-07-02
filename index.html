@@ -1008,6 +1008,8 @@
             if (prefix === "CONCURRENCY") colorClass = "text-yellow-300 font-bold";
             if (prefix === "SECURITY PERIMETER ALERT") colorClass = "text-yellow-300 font-bold animate-pulse";
             if (prefix === "DYNAMIC BIAS") colorClass = "text-emerald-300 font-bold";
+            if (prefix === "STREAM INITIALIZED") colorClass = "text-cyan-300 font-bold";
+            if (prefix === "STREAM NODE") colorClass = "text-emerald-300";
 
             logEntry.innerHTML = `<span class="${colorClass}">[${prefix}]</span> ${message}`;
             if (prepend) {
@@ -1060,12 +1062,229 @@
             addLog("Reset complete. Sovereign Supervisor cache memory flushed cleanly. Telemetry Compliant.", "TELEMETRY");
         }
 
+        function setUiEngagementRunning() {
+            const runButton = document.getElementById('run-ingestion-button');
+            if (!runButton) return;
+            runButton.disabled = true;
+            runButton.classList.add('opacity-60', 'cursor-not-allowed');
+        }
+
+        async function handleNetworkFaults(response, payload) {
+            if (response.status === 401) {
+                const canonicalAlert = "Ingestion rejected. Invalid or missing X-Substrate-Auth token.";
+                const detail = await readErrorDetail(
+                    response,
+                    canonicalAlert
+                );
+                addLog(canonicalAlert, "SECURITY PERIMETER ALERT", true);
+                if (detail !== canonicalAlert) {
+                    addLog(`Gateway detail: ${detail}`, "ERROR");
+                }
+                releaseUiEngagementButtons();
+                return;
+            }
+            if (response.status === 403) {
+                const detail = await readErrorDetail(
+                    response,
+                    "ADVERSARIAL_DENIED: Invalid override passphrase verification token."
+                );
+                addLog(detail, "ERROR");
+                addLog("Override request blocked before graph execution.", "ADVERSARIAL ALERT", true);
+                releaseUiEngagementButtons();
+                return;
+            }
+            if (response.status === 500) {
+                const detail = await readErrorDetail(
+                    response,
+                    "LangGraph execution collapsed before returning telemetry."
+                );
+                addLog(detail, "ERROR");
+                addLog(`Execution trace parameters: ${formatTraceParameters(payload)}`, "ERROR");
+                releaseUiEngagementButtons();
+                return;
+            }
+            addLog("Local server failed to compile Graph stream. Dropping back to standalone mock...", "ERROR");
+            releaseUiEngagementButtons();
+            executeMockSimulation();
+        }
+
+        function extractStreamState(data) {
+            if (!data || typeof data !== "object") return null;
+            if (data.state && typeof data.state === "object") return data.state;
+            const nodeKeys = ["radar", "supervisor", "rh_core", "lh_validator"];
+            for (const key of nodeKeys) {
+                if (data[key] && typeof data[key] === "object") return data[key];
+            }
+            return data.run_id ? data : null;
+        }
+
+        function streamNodeLabel(data, streamState) {
+            if (data?.radar) return "LEM-04";
+            if (data?.supervisor) return "LEM-01";
+            if (data?.rh_core) return "LEM-02";
+            if (data?.lh_validator) return "LEM-03";
+            return streamState?.current_node || "STREAM";
+        }
+
+        function streamNodePrefix(nodeLabel) {
+            if (nodeLabel === "LEM-04") return "RADAR";
+            if (nodeLabel === "LEM-01") return "SUPERVISOR";
+            if (nodeLabel === "LEM-02") return "RH_CORE";
+            if (nodeLabel === "LEM-03") return "LH_VALIDATOR";
+            return "STREAM NODE";
+        }
+
+        function nodeNumberFromLabel(nodeLabel) {
+            const match = String(nodeLabel || "").match(/LEM-0?([1-4])/);
+            return match ? Number(match[1]) : null;
+        }
+
+        function flashVisitedNodes(visitedNodes = []) {
+            visitedNodes.forEach((nodeLabel) => {
+                const nodeNumber = nodeNumberFromLabel(nodeLabel);
+                if (!nodeNumber) return;
+                const status = document.getElementById(`status-l${nodeNumber}`);
+                const card = document.getElementById(`card-l${nodeNumber}`);
+                const rect = document.getElementById(`rect-l${nodeNumber}`);
+                if (status) {
+                    status.className = "text-[10px] code-font text-emerald-300 flex items-center gap-1 animate-pulse";
+                    status.innerHTML = '<i class="fa-solid fa-circle-check"></i> STREAMED';
+                }
+                if (card) {
+                    card.style.border = "1px solid rgba(16, 185, 129, 0.75)";
+                }
+                if (rect) {
+                    rect.setAttribute("stroke", "#10b981");
+                }
+            });
+        }
+
+        function currentNodePayloadText(nodeLabel, streamState) {
+            const dialogue = Array.isArray(streamState?.agent_dialogue) ? streamState.agent_dialogue : [];
+            const latestDialogue = dialogue.length ? dialogue[dialogue.length - 1] : null;
+            if (latestDialogue?.message) return latestDialogue.message;
+            if (nodeLabel === "LEM-01" && streamState?.supervisor_payload) {
+                return stringifyMarkdownValue(streamState.supervisor_payload);
+            }
+            if (nodeLabel === "LEM-02" && streamState?.strategic_layers?.length) {
+                return streamState.strategic_layers.join("\n");
+            }
+            if (nodeLabel === "LEM-03" && streamState?.execution_matrix) {
+                return stringifyMarkdownValue(streamState.execution_matrix);
+            }
+            const logs = Array.isArray(streamState?.logs) ? streamState.logs : [];
+            return logs.length ? logs[logs.length - 1] : `${nodeLabel} emitted state update.`;
+        }
+
+        function renderStreamState(data) {
+            const streamState = extractStreamState(data);
+            if (!streamState) return null;
+            if (streamState.active_bias_profile) {
+                setHudBiasProfile(streamState.active_bias_profile);
+            }
+            if (Array.isArray(streamState.visited_nodes)) {
+                flashVisitedNodes(streamState.visited_nodes);
+            }
+            refreshStateJSON();
+            return streamState;
+        }
+
+        function processStreamChunk(data) {
+            if (data?.event === "stream_started") {
+                const terminal = document.getElementById('terminal-feed');
+                if (terminal) terminal.innerHTML = "";
+                state.terminalLogs = [];
+                addLog("Async multi-source graph connection established.", "STREAM INITIALIZED");
+                return;
+            }
+
+            if (data?.event === "stream_error") {
+                addLog(data.detail || "Streaming graph execution failed.", "ERROR");
+                releaseUiEngagementButtons();
+                return;
+            }
+
+            if (data?.event === "stream_complete") {
+                const finalState = data.state || extractStreamState(data);
+                if (finalState) {
+                    updateMathematicalTelemetry(finalState);
+                    if (finalState.lock_contention_detected === true) {
+                        addLog(
+                            "Secondary invocation intercepted. Substrate state lock active. Request queued sequentially to prevent transactional collision.",
+                            "CONCURRENCY",
+                            true
+                        );
+                    }
+                    const biasProfile = finalState.active_bias_profile || {};
+                    addLog(`Substrate initialized with profile: ${activeBiasProfileName(biasProfile)}`, "DYNAMIC BIAS");
+                    addLog(
+                        ` -> G1 (Supervisor Gain): ${formatBiasValue(biasProfile.supervisor_bias)} | G2 (Creative Exploration): ${formatBiasValue(biasProfile.creative_bias)}`,
+                        "DYNAMIC BIAS"
+                    );
+                    if (finalState.ai_api_config) {
+                        addLog(
+                            `AI API config accepted: ${finalState.ai_api_config.provider}/${finalState.ai_api_config.model}; key configured=${finalState.ai_api_config.api_key_configured}`,
+                            "TELEMETRY"
+                        );
+                    }
+                    addLog("STATUS: SUCCESS - Cognitive streaming traversal complete.", "TELEMETRY");
+                    state.lastRunExport = buildRunMarkdownExport(finalState);
+                }
+                releaseUiEngagementButtons();
+                return;
+            }
+
+            const streamState = renderStreamState(data);
+            if (!streamState) return;
+            const nodeLabel = streamNodeLabel(data, streamState);
+            const prefix = streamNodePrefix(nodeLabel);
+            const payloadText = currentNodePayloadText(nodeLabel, streamState);
+            addLog(`${nodeLabel} streamed update: ${payloadText}`, prefix);
+        }
+
+        async function readSseStream(response) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let buffer = "";
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+                const frames = buffer.split("\n\n");
+                buffer = frames.pop() || "";
+
+                for (const frame of frames) {
+                    if (!frame.trim().startsWith("data: ")) continue;
+                    try {
+                        const rawJson = frame.replace(/^data:\s*/, "").trim();
+                        const chunkData = JSON.parse(rawJson);
+                        processStreamChunk(chunkData);
+                    } catch (err) {
+                        console.error("[SSE PARSE ERROR] Skipping malformed frame:", err);
+                    }
+                }
+            }
+
+            buffer += decoder.decode().replace(/\r\n/g, "\n");
+            if (buffer.trim().startsWith("data: ")) {
+                try {
+                    const rawJson = buffer.replace(/^data:\s*/, "").trim();
+                    processStreamChunk(JSON.parse(rawJson));
+                } catch (err) {
+                    console.error("[SSE PARSE ERROR] Skipping malformed final frame:", err);
+                }
+            }
+        }
+
         async function runIngestion() {
             const prompt = document.getElementById('target-prompt').value || state.target;
             const evidenceContext = document.getElementById('evidence-context').value.trimEnd();
             const variance = document.getElementById('variance-slider').value;
             const radarDegradationOverride = syncOverrideState();
             syncAiApiConfig();
+            setUiEngagementRunning();
 
             addLog(`Sovereign ingestion triggered for objective: "${prompt}"`, "SYSTEM");
             if (evidenceContext.trim().length > 0) {
@@ -1097,87 +1316,30 @@
             };
 
             if (state.backendOnline) {
-                addLog("Sending payload parameters to local LangGraph FastAPI server...", "TELEMETRY");
+                addLog("Opening SSE stream to local LangGraph FastAPI server...", "TELEMETRY");
                 try {
-                    const response = await fetch(`${getBackendBaseUrl()}/run`, {
-                        method: 'POST',
+                    const response = await fetch(`${window.location.origin}/api/stream-run`, {
+                        method: "POST",
                         headers: {
                             "Content-Type": "application/json",
                             "X-Substrate-Auth": localStorage.getItem("SUBSTRATE_AUTH_TOKEN") || ""
                         },
                         body: JSON.stringify(payload)
                     });
-                    
-                    if (response.ok) {
-                        const runResult = await response.json();
-                        addLog("LangGraph flow completed successfully. Parsing agent conversation traces:", "TELEMETRY");
-                        updateMathematicalTelemetry(runResult);
-                        const biasProfile = runResult.active_bias_profile || {};
-                        const profileName = activeBiasProfileName(biasProfile);
-                        addLog(`Substrate initialized with profile: ${profileName}`, "DYNAMIC BIAS");
-                        addLog(
-                            ` -> G1 (Supervisor Gain): ${formatBiasValue(biasProfile.supervisor_bias)} | G2 (Creative Exploration): ${formatBiasValue(biasProfile.creative_bias)}`,
-                            "DYNAMIC BIAS"
-                        );
-                        if (runResult.lock_contention_detected === true) {
-                            addLog(
-                                "Secondary invocation intercepted. Substrate state lock active. Request queued sequentially to prevent transactional collision.",
-                                "CONCURRENCY",
-                                true
-                            );
-                        }
-                        if (radarDegradationOverride) {
-                            applyRadarDegradationInterception();
-                        }
-                        
-                        normalizeStreamEntries(runResult.logs).forEach(log => {
-                            addLog(log, "TELEMETRY");
-                        });
 
-                        if (runResult.ai_api_config) {
-                            addLog(
-                                `AI API config accepted: ${runResult.ai_api_config.provider}/${runResult.ai_api_config.model}; key configured=${runResult.ai_api_config.api_key_configured}`,
-                                "TELEMETRY"
-                            );
-                        }
+                    if (!response.ok) {
+                        await handleNetworkFaults(response, payload);
+                        return;
+                    }
+                    if (!response.body) {
+                        addLog("Streaming response body unavailable in this browser runtime.", "ERROR");
+                        releaseUiEngagementButtons();
+                        return;
+                    }
 
-                        normalizeStreamEntries(runResult.agent_dialogue).forEach(dia => {
-                            if (typeof dia === "string") {
-                                addLog(dia, "TELEMETRY");
-                                return;
-                            }
-                            const name = (dia.agent || "LEM-XX").replace(" ", "_");
-                            addLog(dia.message || stringifyMarkdownValue(dia), name);
-                        });
-                        addLog("STATUS: SUCCESS - Cognitive diagnostic traversal complete.", "TELEMETRY");
-                        state.lastRunExport = buildRunMarkdownExport(runResult);
-                    } else if (response.status === 401) {
-                        const detail = await readErrorDetail(
-                            response,
-                            "Ingestion rejected. Invalid or missing X-Substrate-Auth token."
-                        );
-                        addLog(detail, "SECURITY PERIMETER ALERT", true);
-                        releaseUiEngagementButtons();
-                    } else if (response.status === 403) {
-                        const detail = await readErrorDetail(
-                            response,
-                            "ADVERSARIAL_DENIED: Invalid override passphrase verification token."
-                        );
-                        addLog(detail, "ERROR");
-                        addLog("Override request blocked before graph execution.", "ADVERSARIAL ALERT", true);
-                        releaseUiEngagementButtons();
-                    } else if (response.status === 500) {
-                        const detail = await readErrorDetail(
-                            response,
-                            "LangGraph execution collapsed before returning telemetry."
-                        );
-                        addLog(detail, "ERROR");
-                        addLog(`Execution trace parameters: ${formatTraceParameters(payload)}`, "ERROR");
-                        releaseUiEngagementButtons();
-                    } else {
-                        addLog("Local server failed to compile Graph run. Dropping back to standalone mock...", "ERROR");
-                        releaseUiEngagementButtons();
-                        executeMockSimulation();
+                    await readSseStream(response);
+                    if (radarDegradationOverride) {
+                        applyRadarDegradationInterception();
                     }
                 } catch (e) {
                     addLog("[NETWORK ERROR] Failed to communicate with containerized LangGraph API gateway. Verify Docker container state.", "ERROR");
