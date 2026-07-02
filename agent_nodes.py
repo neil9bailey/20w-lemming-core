@@ -1,4 +1,5 @@
 import hashlib
+import asyncio
 import json
 import math
 from datetime import datetime, timezone
@@ -24,12 +25,92 @@ SYCOPHANTIC_PATTERNS = (
     "you're right",
 )
 
+EVIDENCE_CHUNK_MAX_CHARS = 3000
+LINGUISTIC_FILLER_PATTERNS = (
+    "it is important to note that",
+    "please note that",
+    "in order to",
+    "as previously mentioned",
+    "for the avoidance of doubt",
+)
+
 
 def compact_evidence_context(evidence_context: str, max_chars: int = 420) -> str:
     compacted = " ".join(evidence_context.split())
     if len(compacted) <= max_chars:
         return compacted
     return f"{compacted[:max_chars].rstrip()}..."
+
+
+def chunk_text_by_token_density(text: str, max_chars: int = EVIDENCE_CHUNK_MAX_CHARS) -> List[str]:
+    """Split evidence into deterministic word-bound chunks without breaking token groups."""
+    normalized = " ".join(str(text).split())
+    if not normalized:
+        return []
+    if len(normalized) <= max_chars:
+        return [normalized]
+
+    chunks: List[str] = []
+    current_tokens: List[str] = []
+    current_length = 0
+    for token in normalized.split(" "):
+        token_length = len(token) + (1 if current_tokens else 0)
+        if current_tokens and current_length + token_length > max_chars:
+            chunks.append(" ".join(current_tokens))
+            current_tokens = [token]
+            current_length = len(token)
+        else:
+            current_tokens.append(token)
+            current_length += token_length
+
+    if current_tokens:
+        chunks.append(" ".join(current_tokens))
+    return chunks
+
+
+def _evidence_segments(evidence_context: str) -> List[str]:
+    stripped = evidence_context.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("[") and stripped.endswith("]"):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return [evidence_context]
+        if isinstance(parsed, list):
+            return [
+                item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+                for item in parsed
+            ]
+    return [evidence_context]
+
+
+def _strip_linguistic_fluff(text: str) -> str:
+    refined = " ".join(text.split())
+    lowered = refined.lower()
+    for filler in LINGUISTIC_FILLER_PATTERNS:
+        if filler in lowered:
+            refined = refined.replace(filler, "").replace(filler.title(), "")
+            lowered = refined.lower()
+    return " ".join(refined.split())
+
+
+async def _compress_evidence_chunk(chunk: str) -> str:
+    return _strip_linguistic_fluff(chunk)
+
+
+async def _prepare_streaming_evidence_context(evidence_context: str) -> tuple[str, int]:
+    chunks: List[str] = []
+    for segment in _evidence_segments(evidence_context):
+        chunks.extend(chunk_text_by_token_density(segment))
+
+    if not chunks:
+        return "", 0
+    if len(chunks) == 1 and len(chunks[0]) <= EVIDENCE_CHUNK_MAX_CHARS:
+        return chunks[0], 1
+
+    refined_chunks = await asyncio.gather(*(_compress_evidence_chunk(chunk) for chunk in chunks))
+    return "\n".join(chunk for chunk in refined_chunks if chunk), len(refined_chunks)
 
 
 def calculate_cognitive_energy(variance_threshold: float, lookahead_horizon: int) -> float:
@@ -189,6 +270,14 @@ async def supervisor_node(state: SubstrateState) -> Dict[str, Any]:
     state["logs"].append("[SUPERVISOR] Converting raw intent into JSON engineering payload.")
 
     evidence_context = state["evidence_context"].strip()
+    evidence_chunk_count = 0
+    if evidence_context:
+        evidence_context, evidence_chunk_count = await _prepare_streaming_evidence_context(evidence_context)
+        state["evidence_context"] = evidence_context
+        if evidence_chunk_count > 1:
+            state["logs"].append(
+                f"[SUPERVISOR] Streaming evidence payload normalized into {evidence_chunk_count} chunks."
+            )
     core_target = state["target_prompt"].strip()
     payload_header = None
     if evidence_context:
@@ -201,6 +290,7 @@ async def supervisor_node(state: SubstrateState) -> Dict[str, Any]:
         "Core_Target": f"{payload_header}\n{core_target}" if payload_header else core_target,
         "Evidence_Context": evidence_context,
         "Historical_Context": state["historical_context"],
+        "Evidence_Chunk_Count": evidence_chunk_count,
         "Max_History_Relevance_Score": state["max_history_relevance_score"],
         "Constraints": [*_base_constraints(state), bias_instruction],
         "Bias_Enforcement_Factor": bias_instruction,

@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
@@ -234,6 +235,21 @@ def build_workflow():
 app_workflow = build_workflow().compile()
 
 
+def _extract_stream_state(stream_output: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not isinstance(stream_output, dict):
+        return None
+    for value in stream_output.values():
+        if isinstance(value, dict) and "run_id" in value:
+            return value
+    if "run_id" in stream_output:
+        return stream_output
+    return None
+
+
+def _sse_data(payload: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+
 def validate_override_authorization(request: IngestionRequest) -> None:
     if not request.simulate_radar_failure:
         return
@@ -295,6 +311,56 @@ async def execute_agentic_flow(
 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Graph Execution Error: {str(e)}")
+
+
+@app.post("/api/stream-run")
+@app.post("/stream-run")
+async def execute_streaming_agentic_flow(
+    request: IngestionRequest,
+    x_substrate_auth: str = Header(default="", alias="X-Substrate-Auth"),
+):
+    """Streams LangGraph state mutations as server-sent event chunks."""
+    validate_substrate_authorization(x_substrate_auth)
+    validate_override_authorization(request)
+
+    lock_contention_detected = substrate_execution_lock.locked()
+    if lock_contention_detected:
+        print(CONCURRENCY_LOCK_LOG, flush=True)
+
+    async def async_graph_stream_generator():
+        async with substrate_execution_lock:
+            graph_output: Dict[str, Any] | None = None
+            start_time = time.perf_counter()
+            try:
+                initial_state = build_initial_state(request)
+                initial_state["lock_contention_detected"] = lock_contention_detected
+                yield _sse_data(
+                    {
+                        "event": "stream_started",
+                        "run_id": initial_state["run_id"],
+                        "lock_contention_detected": lock_contention_detected,
+                    }
+                )
+
+                async for output in app_workflow.astream(initial_state):
+                    extracted_state = _extract_stream_state(output)
+                    if extracted_state is not None:
+                        graph_output = extracted_state
+                    yield _sse_data(output)
+
+                if graph_output is not None:
+                    velocity_ms = (time.perf_counter() - start_time) * 1000.0
+                    graph_output["velocity_ms"] = round(velocity_ms, 3)
+                    graph_output["lock_contention_detected"] = lock_contention_detected
+                    try:
+                        record_run(graph_output)
+                    except Exception as persistence_error:
+                        graph_output["logs"].append(f"[MEMORY] Run persistence failed: {persistence_error}")
+                    yield _sse_data({"event": "stream_complete", "state": graph_output})
+            except Exception as e:
+                yield _sse_data({"event": "stream_error", "detail": f"Graph Execution Error: {str(e)}"})
+
+    return StreamingResponse(async_graph_stream_generator(), media_type="text/event-stream")
 
 
 @app.get("/health")
