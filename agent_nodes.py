@@ -92,6 +92,18 @@ def _base_constraints(state: SubstrateState) -> List[str]:
     return constraints
 
 
+def _bias_factor(state: SubstrateState, bias_key: str) -> float:
+    active_profile = state.get("active_bias_profile", {})
+    try:
+        return min(1.0, max(0.0, float(active_profile.get(bias_key, 0.5))))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _bias_instruction(state: SubstrateState, bias_key: str) -> str:
+    return f"[BIAS ENFORCEMENT FACTOR: {_bias_factor(state, bias_key):.2f}]"
+
+
 def _dialogue_messages(state: SubstrateState) -> List[str]:
     return [entry.get("message", "") for entry in state["agent_dialogue"]]
 
@@ -183,13 +195,15 @@ async def supervisor_node(state: SubstrateState) -> Dict[str, Any]:
         payload_header = "[VERIFIED EVIDENCE ATTACHED: COMPILING BOUNDARIES]"
         state["logs"].append("[SUPERVISOR] Evidence Block detected. Compiling payload boundaries.")
 
+    bias_instruction = _bias_instruction(state, "supervisor_bias")
     payload = {
         "Payload_Header": payload_header,
         "Core_Target": f"{payload_header}\n{core_target}" if payload_header else core_target,
         "Evidence_Context": evidence_context,
         "Historical_Context": state["historical_context"],
         "Max_History_Relevance_Score": state["max_history_relevance_score"],
-        "Constraints": _base_constraints(state),
+        "Constraints": [*_base_constraints(state), bias_instruction],
+        "Bias_Enforcement_Factor": bias_instruction,
         "Metrics_Of_Success": [
             "Output preserves human sovereignty.",
             "Strategic layers match the requested lookahead horizon.",
@@ -209,8 +223,10 @@ async def rh_core_node(state: SubstrateState) -> Dict[str, Any]:
     """LEM-02 generates deterministic strategic layers from the supervisor payload."""
     _mark_node(state, "LEM-02")
     horizon = max(0, int(state["lookahead_horizon"]))
+    bias_instruction = _bias_instruction(state, "creative_bias")
     state["logs"].append(f"[RH_CORE] Generating {horizon} raw strategic layers.")
     state["logs"].append("[RH_CORE] Strategic Bias Profile loaded into RH state.")
+    state["logs"].append(f"[RH_CORE] {bias_instruction}")
 
     core_target = state["supervisor_payload"].get("Core_Target", state["target_prompt"])
     evidence_context = state["evidence_context"].strip()
@@ -223,12 +239,12 @@ async def rh_core_node(state: SubstrateState) -> Dict[str, Any]:
         if evidence_context:
             layer = (
                 f"Layer {index}: cross-reference evidence '{evidence_excerpt}' against '{core_target}' "
-                f"and produce an anchored leverage-point move at horizon depth {index}."
+                f"and produce an anchored leverage-point move at horizon depth {index}. {bias_instruction}"
             )
         else:
             layer = (
                 f"Layer {index}: convert '{core_target}' into a leverage-point move "
-                f"that preserves Conductor sovereignty at horizon depth {index}."
+                f"that preserves Conductor sovereignty at horizon depth {index}. {bias_instruction}"
             )
         layers.append(layer)
 

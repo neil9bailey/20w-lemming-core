@@ -12,7 +12,14 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
 from agent_nodes import lh_validator_node, radar_node, rh_core_node, supervisor_node
-from memory_store import initialize_memory, load_bias_profile, load_successful_runs, record_run
+from memory_store import (
+    DEFAULT_ACTIVE_BIAS_PROFILE,
+    initialize_memory,
+    load_active_bias_profile,
+    load_bias_profile,
+    load_successful_runs,
+    record_run,
+)
 from state_schema import (
     CONCURRENCY_LOCK_LOG,
     CONTEXT_TRUNCATION_FLAG,
@@ -48,6 +55,11 @@ class IngestionRequest(BaseModel):
     ai_model: str = "gpt-4.1"
     simulate_radar_failure: bool = False
     override_passphrase: str = ""
+
+
+def configured_bias_profile_name() -> str:
+    configured_name = os.environ.get("SUBSTRATE_BIAS_PROFILE", DEFAULT_ACTIVE_BIAS_PROFILE)
+    return configured_name.strip() or DEFAULT_ACTIVE_BIAS_PROFILE
 
 
 def _truncate_text(value: str, max_chars: int) -> tuple[str, bool]:
@@ -110,6 +122,7 @@ def _balance_context_budget(
 def build_initial_state(request: IngestionRequest) -> SubstrateState:
     run_id = str(uuid.uuid4())
     bias_profile = load_bias_profile()
+    active_bias_profile = load_active_bias_profile(configured_bias_profile_name())
     historical_context = load_successful_runs(target_prompt=request.target_prompt, limit=3)
     (
         target_prompt,
@@ -130,6 +143,9 @@ def build_initial_state(request: IngestionRequest) -> SubstrateState:
     ai_provider = request.ai_provider.strip() or "openai"
     ai_model = request.ai_model.strip() or "gpt-4.1"
     logs = ["Initialize trace through 20W multi-agent engine..."]
+    logs.append(
+        f"[BIAS] Active bias profile loaded: {active_bias_profile.get('pattern_type', configured_bias_profile_name())}."
+    )
     if context_truncated:
         logs.append(
             f"[BUDGET] Context budget guard activated. Payload capped at {MAX_CONTEXT_CHARS} characters."
@@ -148,6 +164,7 @@ def build_initial_state(request: IngestionRequest) -> SubstrateState:
         "recalibrated": False,
         "agent_directives": dict(DEFAULT_AGENT_DIRECTIVES),
         "bias_profile": bias_profile,
+        "active_bias_profile": active_bias_profile,
         "node_bias_profiles": {
             "LEM-01": bias_profile,
             "LEM-02": bias_profile,

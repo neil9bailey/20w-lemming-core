@@ -91,6 +91,7 @@ class SubstrateState(TypedDict):
     recalibrated: bool
     agent_directives: Dict[str, str]
     bias_profile: str
+    active_bias_profile: Dict[str, Any]
     node_bias_profiles: Dict[str, str]
     ai_api_config: Dict[str, Any]
     historical_context: List[Dict[str, Any]]
