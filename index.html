@@ -430,9 +430,8 @@
     <!-- UI State Control Script -->
     <script>
         const getBackendBaseUrl = () => {
-            const currentHost = window.location.hostname;
-            // Resolve cleanly to the standard exposed API container gateway port
-            return `http://${currentHost}:8001`;
+            // Route browser-origin API traffic through the Nginx perimeter gateway.
+            return `${window.location.origin}/api`;
         };
 
         const state = {
