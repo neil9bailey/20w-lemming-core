@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import sqlite3
 import math
 import re
@@ -47,6 +49,21 @@ DEFAULT_BIAS_VECTORS = (
         0.78,
     ),
 )
+
+
+def _horizon_cache_fingerprint(prompt_text: str, source_text: str) -> str:
+    fingerprint_payload = "\n".join(
+        [
+            "20w-dual-horizon-cache-v1",
+            str(prompt_text or ""),
+            str(source_text or ""),
+        ]
+    )
+    return hashlib.sha256(fingerprint_payload.encode("utf-8")).hexdigest()
+
+
+def _source_fingerprint(source_text: str) -> str:
+    return hashlib.sha256(str(source_text or "").encode("utf-8")).hexdigest()
 
 
 def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
@@ -334,6 +351,19 @@ def initialize_memory(db_path: Path = DB_PATH) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_bias_strength ON bias_vectors(strength DESC)"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dual_horizon_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    source_fingerprint TEXT NOT NULL,
+                    cached_node_payload TEXT NOT NULL,
+                    persisted_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cache_fingerprint ON dual_horizon_cache(source_fingerprint)"
+            )
             connection.executemany(
                 """
                 INSERT OR IGNORE INTO bias_vectors (
@@ -346,6 +376,70 @@ def initialize_memory(db_path: Path = DB_PATH) -> None:
             )
     except RuntimeError:
         return
+
+
+async def fetch_horizon_cache(
+    prompt_text: str,
+    source_text: str,
+    db_path: Path = DB_PATH,
+) -> Optional[str]:
+    """Return a cached node payload for an identical prompt/source fingerprint."""
+
+    def _fetch() -> Optional[str]:
+        initialize_memory(db_path=db_path)
+        cache_key = _horizon_cache_fingerprint(prompt_text, source_text)
+        try:
+            with _connection_scope(db_path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT cached_node_payload
+                    FROM dual_horizon_cache
+                    WHERE cache_key = ?
+                    LIMIT 1
+                    """,
+                    (cache_key,),
+                ).fetchone()
+        except RuntimeError:
+            return None
+        if row is None:
+            return None
+        return str(row["cached_node_payload"])
+
+    return await asyncio.to_thread(_fetch)
+
+
+async def commit_horizon_cache(
+    prompt_text: str,
+    source_text: str,
+    generated_payload: str,
+    db_path: Path = DB_PATH,
+) -> Optional[str]:
+    """Persist a generated payload against the deterministic prompt/source fingerprint."""
+
+    def _commit() -> Optional[str]:
+        initialize_memory(db_path=db_path)
+        cache_key = _horizon_cache_fingerprint(prompt_text, source_text)
+        source_fingerprint = _source_fingerprint(source_text)
+        try:
+            with _connection_scope(db_path) as connection:
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO dual_horizon_cache (
+                        cache_key, source_fingerprint, cached_node_payload, persisted_timestamp
+                    )
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        cache_key,
+                        source_fingerprint,
+                        str(generated_payload or ""),
+                    ),
+                )
+        except RuntimeError:
+            return None
+        return cache_key
+
+    return await asyncio.to_thread(_commit)
 
 
 def calculate_relevance_score(target_prompt: str, historical_intent: str) -> float:

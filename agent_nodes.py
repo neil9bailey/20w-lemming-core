@@ -1,12 +1,16 @@
 import hashlib
 import asyncio
 import json
+import logging
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from state_schema import SubstrateState, TOTAL_LEMMING_NODES
 
+
+logger = logging.getLogger(__name__)
 
 SYCOPHANTIC_PATTERNS = (
     "absolutely",
@@ -26,6 +30,19 @@ SYCOPHANTIC_PATTERNS = (
 )
 
 EVIDENCE_CHUNK_MAX_CHARS = 3000
+SOURCE_READ_BUFFER_CHARS = 65536
+SUPPORTED_EXTERNAL_SOURCE_SUFFIXES = {".txt", ".json", ".md"}
+EXCLUDED_EXTERNAL_SOURCE_PARTS = {
+    ".agents",
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "__pycache__",
+    "agents",
+    "node_modules",
+    "venv",
+}
 LINGUISTIC_FILLER_PATTERNS = (
     "it is important to note that",
     "please note that",
@@ -111,6 +128,64 @@ async def _prepare_streaming_evidence_context(evidence_context: str) -> tuple[st
 
     refined_chunks = await asyncio.gather(*(_compress_evidence_chunk(chunk) for chunk in chunks))
     return "\n".join(chunk for chunk in refined_chunks if chunk), len(refined_chunks)
+
+
+def _is_hidden_or_development_path(path: Path, root: Path) -> bool:
+    if root.name.lower().startswith(".") or root.name.lower() in EXCLUDED_EXTERNAL_SOURCE_PARTS:
+        return True
+    try:
+        relative_parts = path.relative_to(root).parts
+    except ValueError:
+        relative_parts = path.parts
+    for part in relative_parts:
+        normalized_part = part.lower()
+        if normalized_part.startswith(".") or normalized_part in EXCLUDED_EXTERNAL_SOURCE_PARTS:
+            return True
+    return False
+
+
+def _read_text_file_bounded(file_path: Path) -> str:
+    chunks: List[str] = []
+    with file_path.open("r", encoding="utf-8", errors="replace") as source_file:
+        while True:
+            chunk = source_file.read(SOURCE_READ_BUFFER_CHARS)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    return "".join(chunks)
+
+
+async def sync_external_source_payloads(directory_path: str) -> List[str]:
+    """Collect supported text sources without blocking the async graph execution loop."""
+    if not directory_path or not directory_path.strip():
+        return []
+
+    root = Path(directory_path).expanduser()
+    if not root.exists() or not root.is_dir():
+        logger.info("[SOURCE_MONITOR] External source root missing or not a directory: %s", root)
+        return []
+
+    payloads: List[str] = []
+    try:
+        source_paths = root.rglob("*")
+        for file_path in source_paths:
+            if not file_path.is_file():
+                continue
+            if file_path.suffix.lower() not in SUPPORTED_EXTERNAL_SOURCE_SUFFIXES:
+                continue
+            if _is_hidden_or_development_path(file_path, root):
+                continue
+            try:
+                payload = await asyncio.to_thread(_read_text_file_bounded, file_path)
+            except OSError as exc:
+                logger.warning("[SOURCE_MONITOR] Skipping unreadable source file %s: %s", file_path, exc)
+                continue
+            if payload.strip():
+                payloads.append(payload)
+                await asyncio.sleep(0)
+    except OSError as exc:
+        logger.warning("[SOURCE_MONITOR] External source scan interrupted for %s: %s", root, exc)
+    return payloads
 
 
 def calculate_cognitive_energy(variance_threshold: float, lookahead_horizon: int) -> float:
@@ -270,6 +345,38 @@ async def supervisor_node(state: SubstrateState) -> Dict[str, Any]:
     state["logs"].append("[SUPERVISOR] Converting raw intent into JSON engineering payload.")
 
     evidence_context = state["evidence_context"].strip()
+    external_source_count = 0
+    external_source_root = str(state.get("external_source_root", "")).strip()
+    if external_source_root:
+        external_payloads = await sync_external_source_payloads(external_source_root)
+        external_source_count = len(external_payloads)
+        if external_payloads:
+            external_chunks: List[str] = []
+            for payload in external_payloads:
+                external_chunks.extend(chunk_text_by_token_density(payload))
+            refined_external_chunks = await asyncio.gather(
+                *(_compress_evidence_chunk(chunk) for chunk in external_chunks)
+            )
+            external_context = "\n".join(chunk for chunk in refined_external_chunks if chunk)
+            evidence_context = "\n".join(
+                part
+                for part in [
+                    evidence_context,
+                    "[EXTERNAL SOURCE PAYLOADS]",
+                    external_context,
+                ]
+                if part
+            )
+            state["evidence_context"] = evidence_context
+            state["logs"].append(
+                f"[SUPERVISOR] Evidence_Source_Count={external_source_count}; "
+                "external source payloads synchronized into evidence context."
+            )
+        else:
+            state["logs"].append(
+                f"[SUPERVISOR] Evidence_Source_Count=0; no supported external source payloads found at {external_source_root}."
+            )
+
     evidence_chunk_count = 0
     if evidence_context:
         evidence_context, evidence_chunk_count = await _prepare_streaming_evidence_context(evidence_context)
@@ -291,6 +398,8 @@ async def supervisor_node(state: SubstrateState) -> Dict[str, Any]:
         "Evidence_Context": evidence_context,
         "Historical_Context": state["historical_context"],
         "Evidence_Chunk_Count": evidence_chunk_count,
+        "Evidence_Source_Count": external_source_count,
+        "External_Source_Root": external_source_root or None,
         "Max_History_Relevance_Score": state["max_history_relevance_score"],
         "Constraints": [*_base_constraints(state), bias_instruction],
         "Bias_Enforcement_Factor": bias_instruction,
