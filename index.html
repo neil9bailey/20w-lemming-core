@@ -62,6 +62,32 @@
             background-size: 100% 2px, 3px 100%;
             pointer-events: none;
         }
+        .hud-card {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-height: 2.5rem;
+        }
+        .hud-card .label {
+            color: #64748b;
+            font-size: 0.65rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .hud-card .value {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.875rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            white-space: nowrap;
+        }
+        .text-green {
+            color: #34d399;
+        }
     </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden select-none">
@@ -82,7 +108,7 @@
         </div>
         
         <!-- Live Telemetry Readouts -->
-        <div class="flex items-center gap-6 text-sm">
+        <div class="flex flex-wrap items-center justify-end gap-3 text-sm">
             <div class="bg-[#0d1117] border border-[#21262d] rounded-lg px-4 py-2 flex items-center gap-3">
                 <span class="text-xs text-slate-500 font-medium">COGNITIVE ENERGY:</span>
                 <span id="hud-energy" class="code-font text-emerald-400 font-bold tracking-widest text-base">14.0W</span>
@@ -99,6 +125,24 @@
             <div class="bg-[#0d1117] border border-[#21262d] rounded-lg px-4 py-2 flex items-center gap-3">
                 <span class="text-xs text-slate-500 font-medium">CONTEXT LOAD:</span>
                 <span id="hud-context-load" class="code-font text-cyan-400 font-bold tracking-widest text-base">0.00</span>
+            </div>
+            <div class="grid grid-cols-2 xl:grid-cols-4 gap-2">
+                <div class="hud-card">
+                    <span class="label">SUPERVISOR GAIN:</span>
+                    <span id="hud-bias-supervisor" class="value text-green">0.00</span>
+                </div>
+                <div class="hud-card">
+                    <span class="label">CREATIVE EXPLORATION:</span>
+                    <span id="hud-bias-creative" class="value text-green">0.00</span>
+                </div>
+                <div class="hud-card">
+                    <span class="label">VALIDATOR RIGOR:</span>
+                    <span id="hud-bias-validator" class="value text-green">0.00</span>
+                </div>
+                <div class="hud-card">
+                    <span class="label">RADAR FILTER:</span>
+                    <span id="hud-bias-radar" class="value text-green">0.00</span>
+                </div>
             </div>
         </div>
     </header>
@@ -468,6 +512,7 @@
                 context_utilization_ratio: 0,
                 context_truncated: false
             },
+            activeBiasProfile: {},
             lastRunExport: null,
             lemmingStates: {
                 1: { title: "LEM-01 SUPERVISOR", status: "ACTIVE", pulse: "cyan", detail: "Intent Filtering activated. Clean routing bounds." },
@@ -629,6 +674,7 @@
                     "steps": state.governanceAuditTrail.steps || []
                 },
                 "context_budget": state.contextBudget,
+                "active_bias_profile": state.activeBiasProfile,
                 "telemetry_power": `${state.energy}W`,
                 "lookahead_depth": state.lookahead,
                 "current_sovereign_intent": document.getElementById('target-prompt').value || state.target,
@@ -665,6 +711,23 @@
         function numericTelemetryValue(value, fallback = 0) {
             const parsed = Number(value);
             return Number.isFinite(parsed) ? parsed : fallback;
+        }
+
+        function formatBiasValue(value) {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed.toFixed(2) : "0.00";
+        }
+
+        function activeBiasProfileName(biasProfile = {}) {
+            return biasProfile.profile_name || biasProfile.pattern_type || "Neil Strategic Bias Profile";
+        }
+
+        function setHudBiasProfile(biasProfile = {}) {
+            state.activeBiasProfile = biasProfile || {};
+            document.getElementById("hud-bias-supervisor").innerText = formatBiasValue(state.activeBiasProfile.supervisor_bias);
+            document.getElementById("hud-bias-creative").innerText = formatBiasValue(state.activeBiasProfile.creative_bias);
+            document.getElementById("hud-bias-validator").innerText = formatBiasValue(state.activeBiasProfile.validator_bias);
+            document.getElementById("hud-bias-radar").innerText = formatBiasValue(state.activeBiasProfile.radar_bias);
         }
 
         function normalizeAuditSteps(auditTrail = null) {
@@ -728,6 +791,14 @@
             lines.push(`- AI Provider: ${state.aiApi.provider}`);
             lines.push(`- AI Model: ${state.aiApi.model}`);
             lines.push(`- API Key Configured: ${state.aiApi.keyConfigured}`);
+            lines.push("");
+            lines.push("## Active Bias Profile");
+            lines.push("");
+            lines.push(`- profile_name: ${activeBiasProfileName(state.activeBiasProfile)}`);
+            lines.push(`- supervisor_bias: ${formatBiasValue(state.activeBiasProfile.supervisor_bias)}`);
+            lines.push(`- creative_bias: ${formatBiasValue(state.activeBiasProfile.creative_bias)}`);
+            lines.push(`- validator_bias: ${formatBiasValue(state.activeBiasProfile.validator_bias)}`);
+            lines.push(`- radar_bias: ${formatBiasValue(state.activeBiasProfile.radar_bias)}`);
             lines.push("");
             lines.push("## Mathematical Telemetry");
             lines.push("");
@@ -822,6 +893,8 @@
         }
 
         function updateMathematicalTelemetry(runResult) {
+            const biasProfile = runResult.active_bias_profile || {};
+            setHudBiasProfile(biasProfile);
             state.telemetry = {
                 E_c: runResult.E_c,
                 delta_a: runResult.delta_a,
@@ -934,6 +1007,7 @@
             if (prefix === "ADVERSARIAL ALERT") colorClass = "text-red-400 font-bold";
             if (prefix === "CONCURRENCY") colorClass = "text-yellow-300 font-bold";
             if (prefix === "SECURITY PERIMETER ALERT") colorClass = "text-yellow-300 font-bold animate-pulse";
+            if (prefix === "DYNAMIC BIAS") colorClass = "text-emerald-300 font-bold";
 
             logEntry.innerHTML = `<span class="${colorClass}">[${prefix}]</span> ${message}`;
             if (prepend) {
@@ -1038,6 +1112,13 @@
                         const runResult = await response.json();
                         addLog("LangGraph flow completed successfully. Parsing agent conversation traces:", "TELEMETRY");
                         updateMathematicalTelemetry(runResult);
+                        const biasProfile = runResult.active_bias_profile || {};
+                        const profileName = activeBiasProfileName(biasProfile);
+                        addLog(`Substrate initialized with profile: ${profileName}`, "DYNAMIC BIAS");
+                        addLog(
+                            ` -> G1 (Supervisor Gain): ${formatBiasValue(biasProfile.supervisor_bias)} | G2 (Creative Exploration): ${formatBiasValue(biasProfile.creative_bias)}`,
+                            "DYNAMIC BIAS"
+                        );
                         if (runResult.lock_contention_detected === true) {
                             addLog(
                                 "Secondary invocation intercepted. Substrate state lock active. Request queued sequentially to prevent transactional collision.",
