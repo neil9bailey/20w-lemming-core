@@ -1,3 +1,4 @@
+import asyncio
 import json
 import hashlib
 import math
@@ -84,6 +85,10 @@ You are an API gateway and mission controller, not a conversational partner.""",
 TOTAL_LEMMING_NODES = 4
 MAX_CONTEXT_CHARS = 12000
 CONTEXT_TRUNCATION_FLAG = "... [CONTEXT TRUNCATED BY SUBSTRATE BUDGET GUARD]"
+CONCURRENCY_LOCK_LOG = (
+    "[CONCURRENCY] Secondary invocation intercepted. Substrate state lock active. "
+    "Request queued sequentially to prevent transactional collision."
+)
 
 
 class LemmingState(TypedDict):
@@ -110,6 +115,7 @@ class LemmingState(TypedDict):
     total_payload_chars: int
     max_context_chars: int
     context_truncated: bool
+    lock_contention_detected: bool
     simulate_radar_failure: bool
     intercept_triggered: bool
     supervisor_payload: Dict[str, Any]
@@ -127,6 +133,7 @@ class LemmingState(TypedDict):
 
 
 app = FastAPI(title="20W Digital Twin Agent Substrate")
+substrate_execution_lock = asyncio.Lock()
 
 # Enable CORS so the Nginx Cockpit (port 8080) can communicate seamlessly with FastAPI (port 8000)
 app.add_middleware(
@@ -554,6 +561,7 @@ def build_initial_state(request: IngestionRequest) -> LemmingState:
         "total_payload_chars": total_payload_chars,
         "max_context_chars": MAX_CONTEXT_CHARS,
         "context_truncated": context_truncated,
+        "lock_contention_detected": False,
         "simulate_radar_failure": request.simulate_radar_failure,
         "intercept_triggered": False,
         "supervisor_payload": {},
@@ -582,23 +590,31 @@ async def execute_agentic_flow(request: IngestionRequest):
                 detail="ADVERSARIAL_DENIED: Invalid override passphrase verification token.",
             )
 
-    try:
-        initial_state = build_initial_state(request)
-        start_time = time.perf_counter()
-        graph_state = await lemming_app.ainvoke(initial_state)
-        velocity_ms = (time.perf_counter() - start_time) * 1000.0
-        final_state = finalize_run_state(graph_state)
-        final_state["velocity_ms"] = round(velocity_ms, 3)
+    lock_contention_detected = substrate_execution_lock.locked()
+    if lock_contention_detected:
+        print(CONCURRENCY_LOCK_LOG, flush=True)
 
+    async with substrate_execution_lock:
         try:
-            record_run(final_state)
-        except Exception as persistence_error:
-            final_state["logs"].append(f"[MEMORY] Run persistence failed: {persistence_error}")
+            initial_state = build_initial_state(request)
+            initial_state["lock_contention_detected"] = lock_contention_detected
 
-        return final_state
+            start_time = time.perf_counter()
+            graph_state = await lemming_app.ainvoke(initial_state)
+            velocity_ms = (time.perf_counter() - start_time) * 1000.0
+            final_state = finalize_run_state(graph_state)
+            final_state["velocity_ms"] = round(velocity_ms, 3)
+            final_state["lock_contention_detected"] = lock_contention_detected
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Graph Execution Error: {str(e)}")
+            try:
+                record_run(final_state)
+            except Exception as persistence_error:
+                final_state["logs"].append(f"[MEMORY] Run persistence failed: {persistence_error}")
+
+            return final_state
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Graph Execution Error: {str(e)}")
 
 
 @app.get("/health")

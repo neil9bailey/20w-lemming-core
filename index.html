@@ -745,6 +745,7 @@
             lines.push(`- pruning_ratio: ${stringifyMarkdownValue(telemetry.pruning_percentage)}`);
             lines.push(`- stability_ratio_S_d: ${stringifyMarkdownValue(telemetry.S_d)}`);
             lines.push(`- simulate_radar_failure: ${state.override.radarDegradation}`);
+            lines.push(`- lock_contention_detected: ${stringifyMarkdownValue(runResult?.lock_contention_detected ?? false)}`);
             lines.push("");
             lines.push("## System Audit Checkpoints");
             lines.push("");
@@ -884,6 +885,7 @@
             if (prefix === "HARVESTER") colorClass = "text-cyan-300 font-bold";
             if (prefix === "ERROR") colorClass = "text-red-400";
             if (prefix === "ADVERSARIAL ALERT") colorClass = "text-red-400 font-bold";
+            if (prefix === "CONCURRENCY") colorClass = "text-yellow-300 font-bold";
 
             logEntry.innerHTML = `<span class="${colorClass}">[${prefix}]</span> ${message}`;
             if (prepend) {
@@ -985,6 +987,13 @@
                         const runResult = await response.json();
                         addLog("LangGraph flow completed successfully. Parsing agent conversation traces:", "TELEMETRY");
                         updateMathematicalTelemetry(runResult);
+                        if (runResult.lock_contention_detected === true) {
+                            addLog(
+                                "Secondary invocation intercepted. Substrate state lock active. Request queued sequentially to prevent transactional collision.",
+                                "CONCURRENCY",
+                                true
+                            );
+                        }
                         if (radarDegradationOverride) {
                             applyRadarDegradationInterception();
                         }
