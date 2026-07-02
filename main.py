@@ -6,7 +6,7 @@ import uuid
 from typing import Any, Dict, List
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
@@ -251,9 +251,24 @@ def validate_override_authorization(request: IngestionRequest) -> None:
         )
 
 
+def validate_substrate_authorization(x_substrate_auth: str) -> None:
+    expected_token = os.environ.get("SUBSTRATE_AUTH_TOKEN", "").strip()
+    if not expected_token:
+        return
+    if x_substrate_auth != expected_token:
+        raise HTTPException(
+            status_code=401,
+            detail="SUBSTRATE_AUTH_DENIED: Invalid or missing X-Substrate-Auth token.",
+        )
+
+
 @app.post("/run")
-async def execute_agentic_flow(request: IngestionRequest):
+async def execute_agentic_flow(
+    request: IngestionRequest,
+    x_substrate_auth: str = Header(default="", alias="X-Substrate-Auth"),
+):
     """Runs a complete trace through the compiled LangGraph substrate."""
+    validate_substrate_authorization(x_substrate_auth)
     validate_override_authorization(request)
 
     lock_contention_detected = substrate_execution_lock.locked()

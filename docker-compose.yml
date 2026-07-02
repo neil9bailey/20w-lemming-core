@@ -7,6 +7,7 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - SUBSTRATE_AUTH_TOKEN=LEMMING_GATEWAY_8080
       - ADVERSARIAL_OVERRIDE_KEY=LEMMING_SECRET_422
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
