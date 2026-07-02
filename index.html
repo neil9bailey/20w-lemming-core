@@ -216,7 +216,7 @@
 
                 <!-- Strategic Action Buttons -->
                 <div class="grid grid-cols-2 gap-3 pt-2">
-                    <button onclick="runIngestion()" class="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition-all shadow-md shadow-cyan-900/10">
+                    <button id="run-ingestion-button" onclick="runIngestion()" class="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition-all shadow-md shadow-cyan-900/10">
                         <i class="fa-solid fa-play"></i> RUN INGESTION
                     </button>
                     <button onclick="injectBanter()" class="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 transition-all shadow-md shadow-amber-900/10">
@@ -663,26 +663,46 @@
             return `[LEM-XX] ${agentName || "Unknown Agent"}`;
         }
 
-        function formatGovernanceAuditTrail(auditTrail = null) {
-            const steps = auditTrail?.steps || [];
+        function numericTelemetryValue(value, fallback = 0) {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : fallback;
+        }
+
+        function normalizeAuditSteps(auditTrail = null) {
+            if (Array.isArray(auditTrail)) return auditTrail;
+            if (Array.isArray(auditTrail?.steps)) return auditTrail.steps;
+            if (auditTrail && typeof auditTrail === "object") return Object.values(auditTrail).filter((entry) => {
+                return entry && typeof entry === "object" && ("node_signature_hash" in entry || "payload_length_chars" in entry);
+            });
+            return [];
+        }
+
+        function formatGovernanceAuditTrail(auditTrail = null, runResult = null) {
+            const steps = normalizeAuditSteps(auditTrail);
             if (!steps.length) return "No governance audit trail captured.";
-            return steps.map((step) => {
+            const fallbackSpeed = runResult?.velocity_ms ?? auditTrail?.velocity_ms ?? null;
+            return steps.map((step, index) => {
                 const signature = step.node_signature_hash || "missing";
-                return `[STEP ${step.step_index}] [${step.node_id}] Signature: SHA256:${signature} [CHARS: ${step.payload_length_chars}] [UTC: ${step.timestamp}]`;
+                const stepIndex = step.step_index ?? index + 1;
+                const nodeId = step.node_id || step.node || "LEM-XX";
+                const chars = step.payload_length_chars ?? step.characters_generated ?? step.generated_chars ?? "n/a";
+                const speed = step.processing_speed_ms ?? step.velocity_ms ?? fallbackSpeed ?? "n/a";
+                const speedLabel = typeof speed === "number" ? `${speed.toFixed(3)}ms` : speed;
+                return `[STEP ${stepIndex}] [${nodeId}] Signature: SHA256:${signature} [SPEED: ${speedLabel}] [CHARS: ${chars}] [UTC: ${step.timestamp || "n/a"}]`;
             }).join("\n");
         }
 
-        function renderGovernanceAuditTrail(auditTrail = null) {
+        function renderGovernanceAuditTrail(auditTrail = null, runResult = null) {
             state.governanceAuditTrail = auditTrail || { transition_count: 0, steps: [] };
             const output = document.getElementById('compliance-audit-output');
             if (output) {
-                output.innerText = formatGovernanceAuditTrail(state.governanceAuditTrail);
+                output.innerText = formatGovernanceAuditTrail(state.governanceAuditTrail, runResult);
             }
             refreshStateJSON();
         }
 
         function setHudContextLoad(value) {
-            const ratio = typeof value === "number" ? value : 0;
+            const ratio = numericTelemetryValue(value);
             const hud = document.getElementById('hud-context-load');
             if (!hud) return;
             hud.innerText = ratio.toFixed(2);
@@ -729,7 +749,7 @@
             lines.push("## Governance Audit Trail");
             lines.push("");
             lines.push("```text");
-            lines.push(formatGovernanceAuditTrail(auditTrail));
+            lines.push(formatGovernanceAuditTrail(auditTrail, runResult));
             lines.push("```");
             lines.push("");
             lines.push("```json");
@@ -830,9 +850,37 @@
                 context_truncated: runResult.context_truncated
             };
             setHudContextLoad(runResult.context_utilization_ratio);
-            renderGovernanceAuditTrail(runResult.governance_audit_trail);
+            renderGovernanceAuditTrail(runResult.governance_audit_trail, runResult);
             state.lastRunExport = buildRunMarkdownExport(runResult);
             refreshStateJSON();
+        }
+
+        function releaseUiEngagementButtons() {
+            const runButton = document.getElementById('run-ingestion-button');
+            if (!runButton) return;
+            runButton.disabled = false;
+            runButton.classList.remove('opacity-60', 'cursor-not-allowed');
+        }
+
+        async function readErrorDetail(response, fallback) {
+            try {
+                const errorPayload = await response.json();
+                return errorPayload.detail || errorPayload.message || fallback;
+            } catch (e) {
+                return fallback;
+            }
+        }
+
+        function formatTraceParameters(payload) {
+            return `prompt_chars=${payload.target_prompt.length}; evidence_chars=${payload.evidence_context.length}; variance=${payload.variance_threshold}; lookahead=${payload.lookahead_horizon}; provider=${payload.ai_provider}; model=${payload.ai_model}; simulate_radar_failure=${payload.simulate_radar_failure}`;
+        }
+
+        function normalizeStreamEntries(value) {
+            if (Array.isArray(value)) return value;
+            if (typeof value === "string") {
+                return value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+            }
+            return [];
         }
 
         async function writeClipboardText(text) {
@@ -886,6 +934,7 @@
             if (prefix === "ERROR") colorClass = "text-red-400";
             if (prefix === "ADVERSARIAL ALERT") colorClass = "text-red-400 font-bold";
             if (prefix === "CONCURRENCY") colorClass = "text-yellow-300 font-bold";
+            if (prefix === "SECURITY PERIMETER ALERT") colorClass = "text-yellow-300 font-bold animate-pulse";
 
             logEntry.innerHTML = `<span class="${colorClass}">[${prefix}]</span> ${message}`;
             if (prepend) {
@@ -979,7 +1028,10 @@
                 try {
                     const response = await fetch(`${getBackendBaseUrl()}/run`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: {
+                            "Content-Type": "application/json",
+                            "X-Substrate-Auth": localStorage.getItem("SUBSTRATE_AUTH_TOKEN") || ""
+                        },
                         body: JSON.stringify(payload)
                     });
                     
@@ -998,7 +1050,7 @@
                             applyRadarDegradationInterception();
                         }
                         
-                        runResult.logs.forEach(log => {
+                        normalizeStreamEntries(runResult.logs).forEach(log => {
                             addLog(log, "TELEMETRY");
                         });
 
@@ -1009,27 +1061,49 @@
                             );
                         }
 
-                        runResult.agent_dialogue.forEach(dia => {
-                            const name = dia.agent.replace(" ", "_");
-                            addLog(dia.message, name);
+                        normalizeStreamEntries(runResult.agent_dialogue).forEach(dia => {
+                            if (typeof dia === "string") {
+                                addLog(dia, "TELEMETRY");
+                                return;
+                            }
+                            const name = (dia.agent || "LEM-XX").replace(" ", "_");
+                            addLog(dia.message || stringifyMarkdownValue(dia), name);
                         });
                         addLog("STATUS: SUCCESS - Cognitive diagnostic traversal complete.", "TELEMETRY");
                         state.lastRunExport = buildRunMarkdownExport(runResult);
+                    } else if (response.status === 401) {
+                        const detail = await readErrorDetail(
+                            response,
+                            "Ingestion rejected. Invalid or missing X-Substrate-Auth token."
+                        );
+                        addLog(detail, "SECURITY PERIMETER ALERT", true);
+                        releaseUiEngagementButtons();
                     } else if (response.status === 403) {
-                        let detail = "ADVERSARIAL_DENIED: Invalid override passphrase verification token.";
-                        try {
-                            const errorPayload = await response.json();
-                            detail = errorPayload.detail || detail;
-                        } catch (e) {}
+                        const detail = await readErrorDetail(
+                            response,
+                            "ADVERSARIAL_DENIED: Invalid override passphrase verification token."
+                        );
                         addLog(detail, "ERROR");
                         addLog("Override request blocked before graph execution.", "ADVERSARIAL ALERT", true);
+                        releaseUiEngagementButtons();
+                    } else if (response.status === 500) {
+                        const detail = await readErrorDetail(
+                            response,
+                            "LangGraph execution collapsed before returning telemetry."
+                        );
+                        addLog(detail, "ERROR");
+                        addLog(`Execution trace parameters: ${formatTraceParameters(payload)}`, "ERROR");
+                        releaseUiEngagementButtons();
                     } else {
                         addLog("Local server failed to compile Graph run. Dropping back to standalone mock...", "ERROR");
+                        releaseUiEngagementButtons();
                         executeMockSimulation();
                     }
                 } catch (e) {
                     addLog("[NETWORK ERROR] Failed to communicate with containerized LangGraph API gateway. Verify Docker container state.", "ERROR");
                     addLog(`API transaction error: ${e.message}. Falling back to stand-alone mock.`, "ERROR");
+                    addLog(`Execution trace parameters: ${formatTraceParameters(payload)}`, "ERROR");
+                    releaseUiEngagementButtons();
                     executeMockSimulation();
                 }
             } else {
