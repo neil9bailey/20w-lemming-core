@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import sqlite3
 import math
 import re
@@ -12,6 +13,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 
 DB_PATH = Path(__file__).resolve().with_name("20w_memory.db")
+WORKSPACE_ROOT = Path(__file__).resolve().parent
 DEFAULT_ACTIVE_BIAS_PROFILE = "sovereignty"
 DEFAULT_BIAS_VALUES: Dict[str, float] = {
     "supervisor_bias": 0.5,
@@ -50,6 +52,18 @@ DEFAULT_BIAS_VECTORS = (
     ),
 )
 
+SENSITIVE_DIGEST_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"(OPENAI|ANTHROPIC|GOOGLE)_API_KEY\s*=", re.IGNORECASE),
+    re.compile(r"C:\\Users\\", re.IGNORECASE),
+    re.compile(r"F:\\code\\", re.IGNORECASE),
+)
+
+LOCAL_METADATA_MARKERS = (
+    ".agents",
+    "AGENTS.md",
+)
+
 
 def _horizon_cache_fingerprint(prompt_text: str, source_text: str) -> str:
     fingerprint_payload = "\n".join(
@@ -64,6 +78,64 @@ def _horizon_cache_fingerprint(prompt_text: str, source_text: str) -> str:
 
 def _source_fingerprint(source_text: str) -> str:
     return hashlib.sha256(str(source_text or "").encode("utf-8")).hexdigest()
+
+
+def _extract_current_node_payload(state: Dict[str, Any]) -> str:
+    explicit_payload = str(state.get("current_node_payload", "") or "").strip()
+    if explicit_payload:
+        return explicit_payload
+
+    execution_matrix = str(state.get("execution_matrix", "") or "").strip()
+    if execution_matrix:
+        return execution_matrix
+
+    dialogue = state.get("agent_dialogue", [])
+    if isinstance(dialogue, list) and dialogue:
+        latest_entry = dialogue[-1]
+        if isinstance(latest_entry, dict):
+            return str(latest_entry.get("message", "") or "").strip()
+        return str(latest_entry or "").strip()
+
+    return ""
+
+
+def _serialize_visited_nodes(state: Dict[str, Any]) -> str:
+    visited_nodes = state.get("visited_nodes", [])
+    if not isinstance(visited_nodes, list):
+        visited_nodes = []
+    return json.dumps([str(node) for node in visited_nodes], ensure_ascii=False)
+
+
+def _parse_visited_nodes(raw_value: Any) -> List[str]:
+    if isinstance(raw_value, list):
+        return [str(node) for node in raw_value]
+    try:
+        parsed = json.loads(str(raw_value or "[]"))
+    except json.JSONDecodeError:
+        return [node.strip() for node in str(raw_value or "").split(",") if node.strip()]
+    if not isinstance(parsed, list):
+        return []
+    return [str(node) for node in parsed]
+
+
+def _is_safe_digest_filename(target_filename: str) -> bool:
+    candidate = Path(str(target_filename or ""))
+    if not candidate.name or candidate.name != str(target_filename):
+        return False
+    if candidate.is_absolute() or candidate.name.startswith("."):
+        return False
+    lowered_name = candidate.name.lower()
+    if lowered_name in {"agents", ".agents", "agents.md"}:
+        return False
+    return True
+
+
+def _digest_payload_is_safe(digest_data: str) -> bool:
+    normalized_payload = str(digest_data or "")
+    lowered_payload = normalized_payload.lower()
+    if any(marker.lower() in lowered_payload for marker in LOCAL_METADATA_MARKERS):
+        return False
+    return not any(pattern.search(normalized_payload) for pattern in SENSITIVE_DIGEST_PATTERNS)
 
 
 def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
@@ -305,6 +377,8 @@ def initialize_memory(db_path: Path = DB_PATH) -> None:
                     velocity_ms REAL NOT NULL DEFAULT 0.0,
                     intercept_triggered INTEGER NOT NULL DEFAULT 0,
                     raw_prompt_length INTEGER NOT NULL DEFAULT 0,
+                    current_node_payload TEXT NOT NULL DEFAULT '',
+                    visited_nodes TEXT NOT NULL DEFAULT '[]',
                     success_flag INTEGER NOT NULL
                 )
                 """
@@ -316,6 +390,8 @@ def initialize_memory(db_path: Path = DB_PATH) -> None:
                     "velocity_ms": "velocity_ms REAL NOT NULL DEFAULT 0.0",
                     "intercept_triggered": "intercept_triggered INTEGER NOT NULL DEFAULT 0",
                     "raw_prompt_length": "raw_prompt_length INTEGER NOT NULL DEFAULT 0",
+                    "current_node_payload": "current_node_payload TEXT NOT NULL DEFAULT ''",
+                    "visited_nodes": "visited_nodes TEXT NOT NULL DEFAULT '[]'",
                 },
             )
             connection.execute(
@@ -442,6 +518,89 @@ async def commit_horizon_cache(
     return await asyncio.to_thread(_commit)
 
 
+async def compile_historical_run_payloads(
+    limit: int = 50,
+    db_path: Path = DB_PATH,
+) -> List[dict]:
+    """Compile recent successful run payloads for long-horizon recollection."""
+
+    def _compile() -> List[dict]:
+        initialize_memory(db_path=db_path)
+        try:
+            bounded_limit = max(1, min(500, int(limit)))
+        except (TypeError, ValueError):
+            bounded_limit = 50
+
+        try:
+            with _connection_scope(db_path) as connection:
+                _ensure_columns(
+                    connection,
+                    "runs",
+                    {
+                        "current_node_payload": "current_node_payload TEXT NOT NULL DEFAULT ''",
+                        "visited_nodes": "visited_nodes TEXT NOT NULL DEFAULT '[]'",
+                    },
+                )
+                rows = connection.execute(
+                    """
+                    SELECT core_target AS target_prompt,
+                           current_node_payload,
+                           visited_nodes
+                    FROM runs
+                    WHERE success_flag = 1
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                    """,
+                    (bounded_limit,),
+                ).fetchall()
+        except RuntimeError:
+            return []
+
+        return [
+            {
+                "target_prompt": str(row["target_prompt"] or ""),
+                "current_node_payload": str(row["current_node_payload"] or ""),
+                "visited_nodes": _parse_visited_nodes(row["visited_nodes"]),
+            }
+            for row in rows
+        ]
+
+    return await asyncio.to_thread(_compile)
+
+
+async def write_knowledge_digest_snapshot(
+    digest_data: str,
+    target_filename: str = "core_knowledge_digest.json",
+) -> bool:
+    """Write a sanitized knowledge digest snapshot to the workspace root."""
+
+    def _write() -> bool:
+        if not _is_safe_digest_filename(target_filename):
+            return False
+        if not _digest_payload_is_safe(digest_data):
+            return False
+
+        target_path = (WORKSPACE_ROOT / target_filename).resolve()
+        try:
+            target_path.relative_to(WORKSPACE_ROOT)
+        except ValueError:
+            return False
+
+        temp_path = target_path.with_suffix(f"{target_path.suffix}.tmp")
+        try:
+            temp_path.write_text(str(digest_data or ""), encoding="utf-8")
+            temp_path.replace(target_path)
+        except OSError:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+        return True
+
+    return await asyncio.to_thread(_write)
+
+
 def calculate_relevance_score(target_prompt: str, historical_intent: str) -> float:
     """Score history by lowercase alphanumeric token overlap against the current target."""
     target_words = set(re.findall(r"[a-z0-9]+", target_prompt.lower()))
@@ -557,6 +716,8 @@ def log_run(state: Dict[str, Any], db_path: Path = DB_PATH) -> Optional[str]:
 
     timestamp = datetime.now(timezone.utc).isoformat()
     target_prompt = str(state.get("target_prompt", ""))
+    current_node_payload = _extract_current_node_payload(state)
+    visited_nodes = _serialize_visited_nodes(state)
     try:
         with _connection_scope(db_path) as connection:
             _ensure_columns(
@@ -566,6 +727,8 @@ def log_run(state: Dict[str, Any], db_path: Path = DB_PATH) -> Optional[str]:
                     "velocity_ms": "velocity_ms REAL NOT NULL DEFAULT 0.0",
                     "intercept_triggered": "intercept_triggered INTEGER NOT NULL DEFAULT 0",
                     "raw_prompt_length": "raw_prompt_length INTEGER NOT NULL DEFAULT 0",
+                    "current_node_payload": "current_node_payload TEXT NOT NULL DEFAULT ''",
+                    "visited_nodes": "visited_nodes TEXT NOT NULL DEFAULT '[]'",
                 },
             )
             connection.execute(
@@ -573,9 +736,9 @@ def log_run(state: Dict[str, Any], db_path: Path = DB_PATH) -> Optional[str]:
                 INSERT OR REPLACE INTO runs (
                     run_id, timestamp, core_target, variance_threshold, lookahead_horizon,
                     E_c, delta_a, S_d, velocity_ms, intercept_triggered, raw_prompt_length,
-                    success_flag
+                    current_node_payload, visited_nodes, success_flag
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -589,6 +752,8 @@ def log_run(state: Dict[str, Any], db_path: Path = DB_PATH) -> Optional[str]:
                     float(state.get("velocity_ms", 0.0)),
                     1 if state.get("intercept_triggered", False) else 0,
                     len(target_prompt),
+                    current_node_payload,
+                    visited_nodes,
                     1 if state.get("success_flag", True) else 0,
                 ),
             )

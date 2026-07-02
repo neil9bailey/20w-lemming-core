@@ -4,6 +4,7 @@ import json
 import os
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List
 
 import uvicorn
@@ -22,6 +23,7 @@ from agent_nodes import (
 )
 from memory_store import (
     DEFAULT_ACTIVE_BIAS_PROFILE,
+    compile_historical_run_payloads,
     commit_horizon_cache,
     fetch_horizon_cache,
     initialize_memory,
@@ -29,6 +31,7 @@ from memory_store import (
     load_bias_profile,
     load_successful_runs,
     record_run,
+    write_knowledge_digest_snapshot,
 )
 from state_schema import (
     CONCURRENCY_LOCK_LOG,
@@ -375,6 +378,23 @@ def _sse_data(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
 
+def _format_knowledge_digest(records: List[dict]) -> str:
+    if not records:
+        return "[]"
+    lines = []
+    for record in records:
+        visited_nodes = record.get("visited_nodes", [])
+        if not isinstance(visited_nodes, list):
+            visited_nodes = []
+        trajectory_ref = " -> ".join(str(node) for node in visited_nodes) or "UNRECORDED"
+        prompt = " ".join(str(record.get("target_prompt", "")).split())
+        outcome = " ".join(str(record.get("current_node_payload", "")).split())
+        lines.append(
+            f"[HISTORIC TRAJECTORY REF: {trajectory_ref}] -> PROMPT: {prompt} | OUTCOME: {outcome}"
+        )
+    return "\n".join(lines)
+
+
 def validate_override_authorization(request: IngestionRequest) -> None:
     if not request.simulate_radar_failure:
         return
@@ -590,6 +610,33 @@ async def execute_streaming_agentic_flow(
                 yield _sse_data({"event": "stream_error", "detail": f"Graph Execution Error: {str(e)}"})
 
     return StreamingResponse(async_graph_stream_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/admin/consolidate-memory")
+@app.post("/admin/consolidate-memory")
+async def consolidate_memory(
+    x_substrate_auth: str = Header(default="", alias="X-Substrate-Auth"),
+):
+    """Compiles successful run history into a local core knowledge digest snapshot."""
+    validate_substrate_authorization(x_substrate_auth)
+    target_digest_file = "core_knowledge_digest.json"
+    extracted_rows = await compile_historical_run_payloads()
+    digest_payload = _format_knowledge_digest(extracted_rows)
+    snapshot_written = await write_knowledge_digest_snapshot(
+        digest_payload,
+        target_filename=target_digest_file,
+    )
+    if not snapshot_written:
+        raise HTTPException(
+            status_code=500,
+            detail="MEMORY_CONSOLIDATION_FAILED: Digest snapshot failed validation or disk write.",
+        )
+    return {
+        "status": "CONSOLIDATED",
+        "compiled_records_count": len(extracted_rows),
+        "target_digest_file": target_digest_file,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 @app.get("/health")

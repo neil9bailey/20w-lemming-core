@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 import time
 import uuid
 from typing import Any, Dict
@@ -14,6 +15,7 @@ API_BASE_URL = os.environ.get("SUBSTRATE_API_BASE_URL", "http://localhost:8080/a
 SUBSTRATE_AUTH_TOKEN = os.environ.get("SUBSTRATE_AUTH_TOKEN", "LEMMING_GATEWAY_8080")
 ADVERSARIAL_OVERRIDE_KEY = os.environ.get("ADVERSARIAL_OVERRIDE_KEY", "LEMMING_SECRET_422")
 REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+DIGEST_SNAPSHOT_PATH = Path(__file__).resolve().with_name("core_knowledge_digest.json")
 
 
 def _authorized_headers(token: str = SUBSTRATE_AUTH_TOKEN) -> Dict[str, str]:
@@ -62,6 +64,17 @@ async def _post_run_with_client(
         return await client.post("/run", json=payload, headers=headers or _authorized_headers())
     except httpx.HTTPError as exc:
         pytest.fail(f"Unable to reach substrate gateway at {API_BASE_URL}: {exc}")
+
+
+async def _post_admin_consolidate(headers: Dict[str, str] | None = None) -> httpx.Response:
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=REQUEST_TIMEOUT) as client:
+        try:
+            return await client.post(
+                "/admin/consolidate-memory",
+                headers=headers or _authorized_headers(),
+            )
+        except httpx.HTTPError as exc:
+            pytest.fail(f"Unable to reach substrate gateway at {API_BASE_URL}: {exc}")
 
 
 def _run(coro):
@@ -160,3 +173,29 @@ def test_dual_horizon_cache_interception():
     assert float(hit_result.get("velocity_ms", 1000.0)) < 1000.0
     assert hit_result["visited_nodes"] == ["LEM-04", "LEM-01", "LEM-02", "LEM-03"]
     assert hit_result["run_id"].startswith("cache-")
+
+
+def test_memory_consolidation_lifecycle():
+    existing_digest = (
+        DIGEST_SNAPSHOT_PATH.read_bytes()
+        if DIGEST_SNAPSHOT_PATH.exists()
+        else None
+    )
+    unauthorized_response = _run(
+        _post_admin_consolidate(headers=_authorized_headers("CORRUPT_SUBSTRATE_TOKEN"))
+    )
+    assert unauthorized_response.status_code == 401
+
+    try:
+        response = _run(_post_admin_consolidate())
+        assert response.status_code == 200
+        result = response.json()
+        assert result["status"] == "CONSOLIDATED"
+        assert isinstance(result["compiled_records_count"], int)
+        assert result["target_digest_file"] == "core_knowledge_digest.json"
+        assert isinstance(result.get("timestamp"), str)
+    finally:
+        if existing_digest is None:
+            DIGEST_SNAPSHOT_PATH.unlink(missing_ok=True)
+        else:
+            DIGEST_SNAPSHOT_PATH.write_bytes(existing_digest)
