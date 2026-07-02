@@ -82,6 +82,7 @@ class SubstrateState(TypedDict):
     run_id: str
     target_prompt: str
     evidence_context: str
+    external_source_root: str
     variance_threshold: float
     lookahead_horizon: int
     current_node: str

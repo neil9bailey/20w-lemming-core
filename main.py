@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -12,9 +13,17 @@ from fastapi.responses import StreamingResponse
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
-from agent_nodes import lh_validator_node, radar_node, rh_core_node, supervisor_node
+from agent_nodes import (
+    lh_validator_node,
+    radar_node,
+    rh_core_node,
+    supervisor_node,
+    sync_external_source_payloads,
+)
 from memory_store import (
     DEFAULT_ACTIVE_BIAS_PROFILE,
+    commit_horizon_cache,
+    fetch_horizon_cache,
     initialize_memory,
     load_active_bias_profile,
     load_bias_profile,
@@ -56,11 +65,126 @@ class IngestionRequest(BaseModel):
     ai_model: str = "gpt-4.1"
     simulate_radar_failure: bool = False
     override_passphrase: str = ""
+    external_source_root: str = ""
 
 
 def configured_bias_profile_name() -> str:
     configured_name = os.environ.get("SUBSTRATE_BIAS_PROFILE", DEFAULT_ACTIVE_BIAS_PROFILE)
     return configured_name.strip() or DEFAULT_ACTIVE_BIAS_PROFILE
+
+
+def calculate_input_fingerprint(target_prompt: str, evidence_context: str) -> str:
+    """Computes a deterministic SHA-256 hash tracking key for context pairs."""
+    combined_raw_text = f"p:{target_prompt.strip()}|c:{evidence_context.strip()}"
+    return hashlib.sha256(combined_raw_text.encode("utf-8")).hexdigest()
+
+
+async def resolve_active_evidence_context(request: IngestionRequest) -> str:
+    evidence_parts = [request.evidence_context.rstrip()]
+    external_source_root = request.external_source_root.strip()
+    if external_source_root:
+        external_payloads = await sync_external_source_payloads(external_source_root)
+        if external_payloads:
+            evidence_parts.extend(["[EXTERNAL SOURCE PAYLOADS]", *external_payloads])
+    return "\n".join(part for part in evidence_parts if part)
+
+
+def _cache_source_text(request: IngestionRequest, active_evidence_context: str) -> str:
+    runtime_config = (
+        f"[RUN CONFIG] variance={request.variance_threshold}; "
+        f"lookahead={request.lookahead_horizon}; "
+        f"provider={request.ai_provider.strip() or 'openai'}; "
+        f"model={request.ai_model.strip() or 'gpt-4.1'}; "
+        f"simulate_radar_failure={request.simulate_radar_failure}"
+    )
+    return "\n".join(part for part in [active_evidence_context, runtime_config] if part)
+
+
+def _cache_interception_enabled(request: IngestionRequest) -> bool:
+    return not request.simulate_radar_failure
+
+
+def _telemetry_cache_block(
+    cache_hit: bool,
+    input_fingerprint: str,
+    E_c: float = 0.0,
+    delta_a: float = 0.0,
+    S_d: float = 0.0,
+) -> Dict[str, Any]:
+    return {
+        "E_c": E_c,
+        "delta_a": delta_a,
+        "S_d": S_d,
+        "cache_hit": cache_hit,
+        "input_fingerprint": input_fingerprint,
+    }
+
+
+def _final_output_string(graph_output: Dict[str, Any]) -> str:
+    execution_matrix = str(graph_output.get("execution_matrix", "")).strip()
+    if execution_matrix:
+        return execution_matrix
+
+    dialogue = graph_output.get("agent_dialogue", [])
+    if isinstance(dialogue, list) and dialogue:
+        latest_entry = dialogue[-1]
+        if isinstance(latest_entry, dict):
+            return str(latest_entry.get("message", "")).strip()
+        return str(latest_entry).strip()
+
+    return json.dumps(graph_output, ensure_ascii=False, default=str)
+
+
+def _cache_hit_payload(
+    request: IngestionRequest,
+    cached_payload: str,
+    active_bias_profile: Dict[str, Any],
+    input_fingerprint: str,
+    lock_contention_detected: bool,
+    velocity_ms: float,
+) -> Dict[str, Any]:
+    run_id = f"cache-{uuid.uuid4()}"
+    telemetry = _telemetry_cache_block(True, input_fingerprint)
+    return {
+        "success_flag": True,
+        "run_id": run_id,
+        "target_prompt": request.target_prompt.strip(),
+        "evidence_context": request.evidence_context.rstrip(),
+        "current_node": "CACHE",
+        "visited_nodes": ["LEM-04", "LEM-01", "LEM-02", "LEM-03"],
+        "current_node_payload": cached_payload,
+        "execution_matrix": cached_payload,
+        "agent_dialogue": [
+            {
+                "agent": "CACHE",
+                "message": cached_payload,
+            }
+        ],
+        "logs": ["[CACHE] Dual-horizon cache hit. Graph execution bypassed."],
+        "active_bias_profile": active_bias_profile,
+        "telemetry": telemetry,
+        "cache_hit": True,
+        "input_fingerprint": input_fingerprint,
+        "E_c": 0.0,
+        "delta_a": 0.0,
+        "S_d": 0.0,
+        "pruning_percentage": 0.0,
+        "autonomous_decisions": 0,
+        "total_decisions": 1,
+        "velocity_ms": round(velocity_ms, 3),
+        "lock_contention_detected": lock_contention_detected,
+        "context_utilization_ratio": 0.0,
+        "total_payload_chars": len(request.target_prompt) + len(request.evidence_context),
+        "max_context_chars": MAX_CONTEXT_CHARS,
+        "context_truncated": False,
+        "intercept_triggered": False,
+        "governance_audit_trail": {
+            "run_id": run_id,
+            "transition_count": 0,
+            "steps": [],
+            "cache_hit": True,
+        },
+    }
 
 
 def _truncate_text(value: str, max_chars: int) -> tuple[str, bool]:
@@ -156,6 +280,7 @@ def build_initial_state(request: IngestionRequest) -> SubstrateState:
         "run_id": run_id,
         "target_prompt": target_prompt,
         "evidence_context": evidence_context,
+        "external_source_root": request.external_source_root.strip(),
         "variance_threshold": request.variance_threshold,
         "lookahead_horizon": request.lookahead_horizon,
         "current_node": "ENTRY",
@@ -293,19 +418,58 @@ async def execute_agentic_flow(
 
     async with substrate_execution_lock:
         try:
+            start_time = time.perf_counter()
+            active_evidence_context = await resolve_active_evidence_context(request)
+            cache_source_text = _cache_source_text(request, active_evidence_context)
+            request_fingerprint = calculate_input_fingerprint(request.target_prompt, cache_source_text)
+            active_bias_profile = load_active_bias_profile(configured_bias_profile_name())
+            cache_enabled = _cache_interception_enabled(request)
+            cached_payload = (
+                await fetch_horizon_cache(request.target_prompt, cache_source_text)
+                if cache_enabled
+                else None
+            )
+            if cached_payload:
+                velocity_ms = (time.perf_counter() - start_time) * 1000.0
+                return _cache_hit_payload(
+                    request=request,
+                    cached_payload=cached_payload,
+                    active_bias_profile=active_bias_profile,
+                    input_fingerprint=request_fingerprint,
+                    lock_contention_detected=lock_contention_detected,
+                    velocity_ms=velocity_ms,
+                )
+
             initial_state = build_initial_state(request)
             initial_state["lock_contention_detected"] = lock_contention_detected
 
-            start_time = time.perf_counter()
             graph_output = await app_workflow.ainvoke(initial_state)
             velocity_ms = (time.perf_counter() - start_time) * 1000.0
             graph_output["velocity_ms"] = round(velocity_ms, 3)
             graph_output["lock_contention_detected"] = lock_contention_detected
+            graph_output["cache_hit"] = False
+            graph_output["input_fingerprint"] = request_fingerprint
+            graph_output["telemetry"] = _telemetry_cache_block(
+                False,
+                request_fingerprint,
+                E_c=float(graph_output.get("E_c", 0.0)),
+                delta_a=float(graph_output.get("delta_a", 0.0)),
+                S_d=float(graph_output.get("S_d", 0.0)),
+            )
 
             try:
                 record_run(graph_output)
             except Exception as persistence_error:
                 graph_output["logs"].append(f"[MEMORY] Run persistence failed: {persistence_error}")
+            if cache_enabled:
+                cache_payload = _final_output_string(graph_output)
+                cache_key = await commit_horizon_cache(
+                    request.target_prompt,
+                    cache_source_text,
+                    cache_payload,
+                )
+                if cache_key:
+                    graph_output["logs"].append("[CACHE] Dual-horizon payload committed for future intercepts.")
 
             return graph_output
 
@@ -327,6 +491,53 @@ async def execute_streaming_agentic_flow(
     if lock_contention_detected:
         print(CONCURRENCY_LOCK_LOG, flush=True)
 
+    stream_start_time = time.perf_counter()
+    active_evidence_context = await resolve_active_evidence_context(request)
+    cache_source_text = _cache_source_text(request, active_evidence_context)
+    request_fingerprint = calculate_input_fingerprint(request.target_prompt, cache_source_text)
+    active_bias_profile = load_active_bias_profile(configured_bias_profile_name())
+    cache_enabled = _cache_interception_enabled(request)
+    cached_payload = (
+        await fetch_horizon_cache(request.target_prompt, cache_source_text)
+        if cache_enabled
+        else None
+    )
+    if cached_payload:
+        cache_state = _cache_hit_payload(
+            request=request,
+            cached_payload=cached_payload,
+            active_bias_profile=active_bias_profile,
+            input_fingerprint=request_fingerprint,
+            lock_contention_detected=lock_contention_detected,
+            velocity_ms=(time.perf_counter() - stream_start_time) * 1000.0,
+        )
+
+        async def immediate_cache_stream():
+            yield _sse_data(
+                {
+                    "event": "stream_started",
+                    "run_id": cache_state["run_id"],
+                    "cache_hit": True,
+                    "lock_contention_detected": lock_contention_detected,
+                }
+            )
+            yield _sse_data(
+                {
+                    "event": "cache_intercept_flush",
+                    "node": "CACHE",
+                    "run_id": cache_state["run_id"],
+                    "current_node": "CACHE",
+                    "current_node_payload": cached_payload,
+                    "active_bias_profile": active_bias_profile,
+                    "visited_nodes": cache_state["visited_nodes"],
+                    "telemetry": cache_state["telemetry"],
+                    "cache_hit": True,
+                }
+            )
+            yield _sse_data({"event": "stream_complete", "state": cache_state, "cache_hit": True})
+
+        return StreamingResponse(immediate_cache_stream(), media_type="text/event-stream")
+
     async def async_graph_stream_generator():
         async with substrate_execution_lock:
             graph_output: Dict[str, Any] | None = None
@@ -339,6 +550,7 @@ async def execute_streaming_agentic_flow(
                         "event": "stream_started",
                         "run_id": initial_state["run_id"],
                         "lock_contention_detected": lock_contention_detected,
+                        "cache_hit": False,
                     }
                 )
 
@@ -352,10 +564,27 @@ async def execute_streaming_agentic_flow(
                     velocity_ms = (time.perf_counter() - start_time) * 1000.0
                     graph_output["velocity_ms"] = round(velocity_ms, 3)
                     graph_output["lock_contention_detected"] = lock_contention_detected
+                    graph_output["cache_hit"] = False
+                    graph_output["input_fingerprint"] = request_fingerprint
+                    graph_output["telemetry"] = _telemetry_cache_block(
+                        False,
+                        request_fingerprint,
+                        E_c=float(graph_output.get("E_c", 0.0)),
+                        delta_a=float(graph_output.get("delta_a", 0.0)),
+                        S_d=float(graph_output.get("S_d", 0.0)),
+                    )
                     try:
                         record_run(graph_output)
                     except Exception as persistence_error:
                         graph_output["logs"].append(f"[MEMORY] Run persistence failed: {persistence_error}")
+                    if cache_enabled:
+                        cache_key = await commit_horizon_cache(
+                            request.target_prompt,
+                            cache_source_text,
+                            _final_output_string(graph_output),
+                        )
+                        if cache_key:
+                            graph_output["logs"].append("[CACHE] Dual-horizon payload committed for future intercepts.")
                     yield _sse_data({"event": "stream_complete", "state": graph_output})
             except Exception as e:
                 yield _sse_data({"event": "stream_error", "detail": f"Graph Execution Error: {str(e)}"})

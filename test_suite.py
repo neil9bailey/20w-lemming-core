@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
+import uuid
 from typing import Any, Dict
 
 import httpx
@@ -49,6 +51,17 @@ async def _post_run(
             return await client.post("/run", json=payload, headers=headers or _authorized_headers())
         except httpx.HTTPError as exc:
             pytest.fail(f"Unable to reach substrate gateway at {API_BASE_URL}: {exc}")
+
+
+async def _post_run_with_client(
+    client: httpx.AsyncClient,
+    payload: Dict[str, Any],
+    headers: Dict[str, str] | None = None,
+) -> httpx.Response:
+    try:
+        return await client.post("/run", json=payload, headers=headers or _authorized_headers())
+    except httpx.HTTPError as exc:
+        pytest.fail(f"Unable to reach substrate gateway at {API_BASE_URL}: {exc}")
 
 
 def _run(coro):
@@ -114,3 +127,36 @@ def test_security_perimeter_failures():
         )
     )
     assert bad_passphrase_response.status_code == 403
+
+
+def test_dual_horizon_cache_interception():
+    unique_target = f"Dual-horizon cache interception probe {uuid.uuid4()}"
+    payload = _base_payload(
+        target_prompt=unique_target,
+        evidence_context=(
+            "Evidence: repeatable dual-horizon cache validation context with stable "
+            "RACI vocabulary and vendor accountability markers."
+        ),
+    )
+
+    async def _round_trip_cache_probe():
+        async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=REQUEST_TIMEOUT) as client:
+            miss = await _post_run_with_client(client, payload)
+            hit_start = time.perf_counter()
+            hit = await _post_run_with_client(client, payload)
+            return miss, hit, time.perf_counter() - hit_start
+
+    miss_response, hit_response, hit_elapsed = _run(_round_trip_cache_probe())
+    assert miss_response.status_code == 200
+    miss_result = miss_response.json()
+    assert miss_result["success_flag"] is True
+    assert miss_result.get("telemetry", {}).get("cache_hit") is False
+
+    assert hit_response.status_code == 200
+    assert hit_elapsed < 1.0
+    hit_result = hit_response.json()
+    assert hit_result["success_flag"] is True
+    assert hit_result.get("telemetry", {}).get("cache_hit") is True
+    assert float(hit_result.get("velocity_ms", 1000.0)) < 1000.0
+    assert hit_result["visited_nodes"] == ["LEM-04", "LEM-01", "LEM-02", "LEM-03"]
+    assert hit_result["run_id"].startswith("cache-")
