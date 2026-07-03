@@ -221,6 +221,7 @@ def _record_audit_step(state: SubstrateState, node_id: str, response_text: str) 
 
 
 def _base_constraints(state: SubstrateState) -> List[str]:
+    core_digest = str(state.get("core_knowledge_digest", "")).strip()
     constraints = [
         "Human Conductor remains final authority.",
         "20W constraint simulation applies.",
@@ -241,6 +242,9 @@ def _base_constraints(state: SubstrateState) -> List[str]:
         constraints.append(
             f"Dynamic history retrieval active; max relevance score: {state['max_history_relevance_score']:.6f}."
         )
+    if state.get("digest_loaded") and core_digest:
+        constraints.append("[HISTORIC SUBSTRATE CORE MEMORY: COGNITIVE SUMMARY INSIDE]")
+        constraints.append(f"Core memory digest excerpt: {compact_evidence_context(core_digest)}")
     if state["context_truncated"]:
         constraints.append(
             f"Context budget guard active at {state['total_payload_chars']} / {state['max_context_chars']} chars."
@@ -390,6 +394,8 @@ async def supervisor_node(state: SubstrateState) -> Dict[str, Any]:
     if evidence_context:
         payload_header = "[VERIFIED EVIDENCE ATTACHED: COMPILING BOUNDARIES]"
         state["logs"].append("[SUPERVISOR] Evidence Block detected. Compiling payload boundaries.")
+    if state.get("digest_loaded"):
+        state["logs"].append("[SUPERVISOR] digest_loaded=True; historic substrate core memory attached.")
 
     bias_instruction = _bias_instruction(state, "supervisor_bias")
     payload = {
@@ -400,6 +406,8 @@ async def supervisor_node(state: SubstrateState) -> Dict[str, Any]:
         "Evidence_Chunk_Count": evidence_chunk_count,
         "Evidence_Source_Count": external_source_count,
         "External_Source_Root": external_source_root or None,
+        "Digest_Loaded": bool(state.get("digest_loaded", False)),
+        "Core_Knowledge_Digest": str(state.get("core_knowledge_digest", "")),
         "Max_History_Relevance_Score": state["max_history_relevance_score"],
         "Constraints": [*_base_constraints(state), bias_instruction],
         "Bias_Enforcement_Factor": bias_instruction,

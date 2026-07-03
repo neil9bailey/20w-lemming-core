@@ -199,3 +199,40 @@ def test_memory_consolidation_lifecycle():
             DIGEST_SNAPSHOT_PATH.unlink(missing_ok=True)
         else:
             DIGEST_SNAPSHOT_PATH.write_bytes(existing_digest)
+
+
+def test_substrate_digest_runtime_injection():
+    existing_digest = (
+        DIGEST_SNAPSHOT_PATH.read_bytes()
+        if DIGEST_SNAPSHOT_PATH.exists()
+        else None
+    )
+    try:
+        DIGEST_SNAPSHOT_PATH.write_text('"MOCK_TRAJECTORY_ALPHA"', encoding="utf-8")
+        unique_target = f"Core knowledge digest runtime injection probe {uuid.uuid4()}"
+        response = _run(
+            _post_run(
+                _base_payload(
+                    target_prompt=unique_target,
+                    evidence_context="Evidence: deterministic digest boot validation.",
+                )
+            )
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["success_flag"] is True
+        assert result["digest_loaded"] is True
+        assert any("digest_loaded=True" in log for log in result.get("logs", []))
+        supervisor_payload = result.get("supervisor_payload", {})
+        assert supervisor_payload.get("Digest_Loaded") is True
+        assert "MOCK_TRAJECTORY_ALPHA" in supervisor_payload.get("Core_Knowledge_Digest", "")
+        assert any(
+            "MOCK_TRAJECTORY_ALPHA" in constraint
+            for constraint in supervisor_payload.get("Constraints", [])
+        )
+    finally:
+        if existing_digest is None:
+            DIGEST_SNAPSHOT_PATH.unlink(missing_ok=True)
+        else:
+            DIGEST_SNAPSHOT_PATH.write_bytes(existing_digest)

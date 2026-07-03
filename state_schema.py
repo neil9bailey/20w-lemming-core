@@ -95,6 +95,8 @@ class SubstrateState(TypedDict):
     active_bias_profile: Dict[str, Any]
     node_bias_profiles: Dict[str, str]
     ai_api_config: Dict[str, Any]
+    digest_loaded: bool
+    core_knowledge_digest: str
     historical_context: List[Dict[str, Any]]
     max_history_relevance_score: float
     governance_audit_trail: Dict[str, Any]

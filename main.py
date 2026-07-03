@@ -5,6 +5,7 @@ import os
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
 
 import uvicorn
@@ -44,6 +45,9 @@ from state_schema import (
 
 app = FastAPI(title="20W Digital Twin Agent Substrate")
 substrate_execution_lock = asyncio.Lock()
+
+CORE_KNOWLEDGE_DIGEST_FILENAME = "core_knowledge_digest.json"
+CORE_KNOWLEDGE_DIGEST_MAX_CHARS = 4000
 
 app.add_middleware(
     CORSMiddleware,
@@ -105,6 +109,26 @@ def _cache_source_text(request: IngestionRequest, active_evidence_context: str) 
 
 def _cache_interception_enabled(request: IngestionRequest) -> bool:
     return not request.simulate_radar_failure
+
+
+def load_core_knowledge_digest_snapshot() -> tuple[bool, str]:
+    """Loads the bounded supervisor boot memory snapshot when present."""
+    digest_path = Path(__file__).resolve().with_name(CORE_KNOWLEDGE_DIGEST_FILENAME)
+    try:
+        if not digest_path.exists() or not digest_path.is_file():
+            return False, ""
+        digest_payload = digest_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False, ""
+
+    if not digest_payload:
+        return False, ""
+    if len(digest_payload) > CORE_KNOWLEDGE_DIGEST_MAX_CHARS:
+        digest_payload = (
+            f"{digest_payload[:CORE_KNOWLEDGE_DIGEST_MAX_CHARS - len(CONTEXT_TRUNCATION_FLAG)].rstrip()}"
+            f"{CONTEXT_TRUNCATION_FLAG}"
+        )
+    return True, digest_payload
 
 
 def _telemetry_cache_block(
@@ -270,10 +294,13 @@ def build_initial_state(request: IngestionRequest) -> SubstrateState:
     )
     ai_provider = request.ai_provider.strip() or "openai"
     ai_model = request.ai_model.strip() or "gpt-4.1"
+    digest_loaded, core_knowledge_digest = load_core_knowledge_digest_snapshot()
     logs = ["Initialize trace through 20W multi-agent engine..."]
     logs.append(
         f"[BIAS] Active bias profile loaded: {active_bias_profile.get('pattern_type', configured_bias_profile_name())}."
     )
+    if digest_loaded:
+        logs.append("[MEMORY] digest_loaded=True; core knowledge digest injected into supervisor boot context.")
     if context_truncated:
         logs.append(
             f"[BUDGET] Context budget guard activated. Payload capped at {MAX_CONTEXT_CHARS} characters."
@@ -303,6 +330,8 @@ def build_initial_state(request: IngestionRequest) -> SubstrateState:
             "model": ai_model,
             "api_key_configured": bool(request.api_key.strip()),
         },
+        "digest_loaded": digest_loaded,
+        "core_knowledge_digest": core_knowledge_digest,
         "historical_context": historical_context,
         "max_history_relevance_score": max_history_relevance_score,
         "governance_audit_trail": {
