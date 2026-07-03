@@ -1318,11 +1318,13 @@
             if (state.backendOnline) {
                 addLog("Opening SSE stream to local LangGraph FastAPI server...", "TELEMETRY");
                 try {
+                    // Hardwired local environment token fallback string
+                    const activeToken = localStorage.getItem("SUBSTRATE_AUTH_TOKEN") || "LEMMING_GATEWAY_8080";
                     const response = await fetch(`${window.location.origin}/api/stream-run`, {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
-                            "X-Substrate-Auth": localStorage.getItem("SUBSTRATE_AUTH_TOKEN") || ""
+                            "X-Substrate-Auth": activeToken
                         },
                         body: JSON.stringify(payload)
                     });

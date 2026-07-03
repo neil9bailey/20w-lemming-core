@@ -7,8 +7,10 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - SUBSTRATE_ENV=development
       - SUBSTRATE_AUTH_TOKEN=LEMMING_GATEWAY_8080
       - ADVERSARIAL_OVERRIDE_KEY=LEMMING_SECRET_422
+      - DIIAC_SUBSTRATE_KEY_SOURCE=ephemeral_development
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 10s
@@ -28,7 +30,7 @@ services:
     ports:
       - "8080:80"
     volumes:
-      - .:/usr/share/nginx/html
+      - ./index.html:/usr/share/nginx/html/index.html:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       backend:
