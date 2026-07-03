@@ -22,6 +22,12 @@ from agent_nodes import (
     supervisor_node,
     sync_external_source_payloads,
 )
+from crypto_signer import (
+    canonicalize_diiac_leaf,
+    derive_public_key_pem,
+    generate_development_ed25519_private_key_pem,
+    sign_trajectory_leaf,
+)
 from memory_store import (
     DEFAULT_ACTIVE_BIAS_PROFILE,
     compile_historical_run_payloads,
@@ -48,6 +54,12 @@ substrate_execution_lock = asyncio.Lock()
 
 CORE_KNOWLEDGE_DIGEST_FILENAME = "core_knowledge_digest.json"
 CORE_KNOWLEDGE_DIGEST_MAX_CHARS = 4000
+DIIAC_SUBSTRATE_KEY_PEM = os.environ.get("DIIAC_SUBSTRATE_KEY_PEM", "").replace("\\n", "\n").strip()
+DIIAC_ATTESTATION_KEY_SOURCE = "environment" if DIIAC_SUBSTRATE_KEY_PEM else "ephemeral_development"
+DIIAC_ATTESTATION_PRIVATE_KEY_PEM = (
+    DIIAC_SUBSTRATE_KEY_PEM or generate_development_ed25519_private_key_pem()
+)
+DIIAC_ATTESTATION_PUBLIC_KEY_PEM = derive_public_key_pem(DIIAC_ATTESTATION_PRIVATE_KEY_PEM)
 
 app.add_middleware(
     CORSMiddleware,
@@ -162,6 +174,43 @@ def _final_output_string(graph_output: Dict[str, Any]) -> str:
     return json.dumps(graph_output, ensure_ascii=False, default=str)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _attestation_metrics(graph_output: Dict[str, Any]) -> Dict[str, Any]:
+    telemetry = dict(graph_output.get("telemetry") or {})
+    telemetry.setdefault("E_c", _safe_float(graph_output.get("E_c")))
+    telemetry.setdefault("delta_a", _safe_float(graph_output.get("delta_a")))
+    telemetry.setdefault("S_d", _safe_float(graph_output.get("S_d")))
+    telemetry["velocity_ms"] = round(_safe_float(graph_output.get("velocity_ms")), 3)
+    telemetry["pruning_percentage"] = round(_safe_float(graph_output.get("pruning_percentage")), 6)
+    return telemetry
+
+
+def attach_diiac_attestation(graph_output: Dict[str, Any]) -> Dict[str, Any]:
+    terminal_payload = str(graph_output.get("current_node_payload") or _final_output_string(graph_output))
+    graph_output["current_node_payload"] = terminal_payload
+    graph_output["telemetry"] = _attestation_metrics(graph_output)
+    leaf_hash = canonicalize_diiac_leaf(
+        target_prompt=str(graph_output.get("target_prompt", "")),
+        visited_nodes=list(graph_output.get("visited_nodes") or []),
+        final_output=terminal_payload,
+        telemetry_metrics=graph_output["telemetry"],
+    )
+    graph_output["diiac_merkle_leaf_hash"] = leaf_hash.hex()
+    graph_output["diiac_attestation_signature"] = sign_trajectory_leaf(
+        leaf_hash,
+        DIIAC_ATTESTATION_PRIVATE_KEY_PEM,
+    )
+    graph_output["diiac_attestation_public_key"] = DIIAC_ATTESTATION_PUBLIC_KEY_PEM
+    graph_output["diiac_attestation_key_source"] = DIIAC_ATTESTATION_KEY_SOURCE
+    return graph_output
+
+
 def _cache_hit_payload(
     request: IngestionRequest,
     cached_payload: str,
@@ -172,7 +221,7 @@ def _cache_hit_payload(
 ) -> Dict[str, Any]:
     run_id = f"cache-{uuid.uuid4()}"
     telemetry = _telemetry_cache_block(True, input_fingerprint)
-    return {
+    payload = {
         "success_flag": True,
         "run_id": run_id,
         "target_prompt": request.target_prompt.strip(),
@@ -212,6 +261,7 @@ def _cache_hit_payload(
             "cache_hit": True,
         },
     }
+    return attach_diiac_attestation(payload)
 
 
 def _truncate_text(value: str, max_chars: int) -> tuple[str, bool]:
@@ -510,6 +560,7 @@ async def execute_agentic_flow(
                 record_run(graph_output)
             except Exception as persistence_error:
                 graph_output["logs"].append(f"[MEMORY] Run persistence failed: {persistence_error}")
+            attach_diiac_attestation(graph_output)
             if cache_enabled:
                 cache_payload = _final_output_string(graph_output)
                 cache_key = await commit_horizon_cache(
@@ -626,6 +677,7 @@ async def execute_streaming_agentic_flow(
                         record_run(graph_output)
                     except Exception as persistence_error:
                         graph_output["logs"].append(f"[MEMORY] Run persistence failed: {persistence_error}")
+                    attach_diiac_attestation(graph_output)
                     if cache_enabled:
                         cache_key = await commit_horizon_cache(
                             request.target_prompt,

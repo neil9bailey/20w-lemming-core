@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+import re
 import time
 import uuid
 from typing import Any, Dict
@@ -10,12 +11,16 @@ from typing import Any, Dict
 import httpx
 import pytest
 
+from crypto_signer import canonicalize_diiac_leaf, verify_trajectory_leaf_signature
+
 
 API_BASE_URL = os.environ.get("SUBSTRATE_API_BASE_URL", "http://localhost:8080/api").rstrip("/")
 SUBSTRATE_AUTH_TOKEN = os.environ.get("SUBSTRATE_AUTH_TOKEN", "LEMMING_GATEWAY_8080")
 ADVERSARIAL_OVERRIDE_KEY = os.environ.get("ADVERSARIAL_OVERRIDE_KEY", "LEMMING_SECRET_422")
 REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 DIGEST_SNAPSHOT_PATH = Path(__file__).resolve().with_name("core_knowledge_digest.json")
+SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+ED25519_SIGNATURE_HEX_PATTERN = re.compile(r"^[0-9a-f]{128}$")
 
 
 def _authorized_headers(token: str = SUBSTRATE_AUTH_TOKEN) -> Dict[str, str]:
@@ -236,3 +241,48 @@ def test_substrate_digest_runtime_injection():
             DIGEST_SNAPSHOT_PATH.unlink(missing_ok=True)
         else:
             DIGEST_SNAPSHOT_PATH.write_bytes(existing_digest)
+
+
+def test_diiac_cryptographic_attestation_integrity():
+    unique_target = f"DIIaC cryptographic attestation probe {uuid.uuid4()}"
+    response = _run(
+        _post_run(
+            _base_payload(
+                target_prompt=unique_target,
+                evidence_context="Evidence: verify deterministic Merkle leaf and Ed25519 signature.",
+            )
+        )
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    leaf_hash_hex = result.get("diiac_merkle_leaf_hash")
+    signature_hex = result.get("diiac_attestation_signature")
+    public_key_pem = result.get("diiac_attestation_public_key")
+
+    assert isinstance(leaf_hash_hex, str)
+    assert SHA256_HEX_PATTERN.fullmatch(leaf_hash_hex)
+    assert isinstance(signature_hex, str)
+    assert ED25519_SIGNATURE_HEX_PATTERN.fullmatch(signature_hex)
+    assert isinstance(public_key_pem, str)
+    assert "BEGIN PUBLIC KEY" in public_key_pem
+
+    recomputed_leaf_hash = canonicalize_diiac_leaf(
+        target_prompt=result["target_prompt"],
+        visited_nodes=result["visited_nodes"],
+        final_output=result["current_node_payload"],
+        telemetry_metrics=result["telemetry"],
+    )
+    second_recomputed_leaf_hash = canonicalize_diiac_leaf(
+        target_prompt=result["target_prompt"],
+        visited_nodes=result["visited_nodes"],
+        final_output=result["current_node_payload"],
+        telemetry_metrics=result["telemetry"],
+    )
+    assert recomputed_leaf_hash == second_recomputed_leaf_hash
+    assert recomputed_leaf_hash.hex() == leaf_hash_hex
+    assert verify_trajectory_leaf_signature(
+        recomputed_leaf_hash,
+        signature_hex,
+        public_key_pem,
+    )
