@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -11,7 +12,12 @@ from typing import Any, Dict
 import httpx
 import pytest
 
-from crypto_signer import canonicalize_diiac_leaf, verify_trajectory_leaf_signature
+from crypto_signer import (
+    canonicalize_diiac_leaf,
+    compute_diiac_merkle_root,
+    hash_node_pair,
+    verify_trajectory_leaf_signature,
+)
 
 
 API_BASE_URL = os.environ.get("SUBSTRATE_API_BASE_URL", "http://localhost:8080/api").rstrip("/")
@@ -83,12 +89,61 @@ async def _post_admin_consolidate(headers: Dict[str, str] | None = None) -> http
             pytest.fail(f"Unable to reach substrate gateway at {API_BASE_URL}: {exc}")
 
 
+async def _get_ledger_pack(headers: Dict[str, str] | None = None) -> httpx.Response:
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=REQUEST_TIMEOUT) as client:
+        try:
+            return await client.get(
+                "/governance/export-ledger-pack",
+                headers=headers or _authorized_headers(),
+            )
+        except httpx.HTTPError as exc:
+            pytest.fail(f"Unable to reach substrate gateway at {API_BASE_URL}: {exc}")
+
+
 def _run(coro):
     return asyncio.run(coro)
 
 
 def _assert_numeric(value: Any, field_name: str) -> None:
     assert isinstance(value, (int, float)), f"{field_name} must be numeric"
+
+
+def _deterministic_leaf_batch(batch_size: int) -> list[str]:
+    return [
+        hashlib.sha256(f"diiac-test-leaf:{batch_size}:{index}".encode("utf-8")).hexdigest()
+        for index in range(batch_size)
+    ]
+
+
+def _resolve_merkle_path(leaf_hash: str, verification_path: list[str]) -> str:
+    rolling_hash = leaf_hash
+    for adjacent_hash in verification_path:
+        rolling_hash = hash_node_pair(rolling_hash, adjacent_hash)
+    return rolling_hash
+
+
+def test_diiac_merkle_root_determinism():
+    for batch_size in (1, 4, 7, 32):
+        leaf_hashes = _deterministic_leaf_batch(batch_size)
+        original_hashes = list(leaf_hashes)
+        root_one, audit_one = compute_diiac_merkle_root(leaf_hashes)
+        root_two, audit_two = compute_diiac_merkle_root(list(leaf_hashes))
+
+        assert leaf_hashes == original_hashes
+        assert SHA256_HEX_PATTERN.fullmatch(root_one)
+        assert root_one == root_two
+        assert audit_one == audit_two
+        assert audit_one["leaf_count"] == batch_size
+        assert len(audit_one["leaves"]) == batch_size
+
+        for index, leaf_hash in enumerate(leaf_hashes):
+            verification_path = audit_one["proof_paths"][str(index)]
+            assert _resolve_merkle_path(leaf_hash, verification_path) == root_one
+
+    with pytest.raises(ValueError):
+        compute_diiac_merkle_root([])
+    with pytest.raises(ValueError):
+        hash_node_pair("A" * 64, "0" * 64)
 
 
 def test_standard_execution_flow():
@@ -295,3 +350,47 @@ def test_diiac_cryptographic_attestation_integrity():
         signature_hex,
         public_key_pem,
     )
+
+
+def test_governance_ledger_pack_export_lifecycle():
+    collected_hashes: list[str] = []
+    for index in range(3):
+        response = _run(
+            _post_run(
+                _base_payload(
+                    target_prompt=f"Governance ledger pack probe {uuid.uuid4()}",
+                    evidence_context=f"Evidence: ledger export transaction index {index}.",
+                )
+            )
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert SHA256_HEX_PATTERN.fullmatch(result["diiac_merkle_leaf_hash"])
+        collected_hashes.append(result["diiac_merkle_leaf_hash"])
+
+    response = _run(_get_ledger_pack())
+    assert response.status_code == 200
+    ledger_pack = response.json()
+    assert ledger_pack["ledger_pack_id"].startswith("LG-EXP-")
+    assert isinstance(ledger_pack.get("timestamp_marker"), str)
+    assert SHA256_HEX_PATTERN.fullmatch(ledger_pack["diiac_merkle_root"])
+    assert ledger_pack["transaction_count"] == len(ledger_pack["manifest_registry"])
+    assert ledger_pack["transaction_count"] >= len(collected_hashes)
+
+    manifest = ledger_pack["manifest_registry"]
+    manifest_leaf_hashes = [entry["leaf_hash"] for entry in manifest]
+    assert manifest_leaf_hashes == sorted(manifest_leaf_hashes)
+    computed_root, audit_tree = compute_diiac_merkle_root(manifest_leaf_hashes)
+    assert computed_root == ledger_pack["diiac_merkle_root"]
+
+    for index, entry in enumerate(manifest):
+        assert isinstance(entry["run_id"], str)
+        assert SHA256_HEX_PATTERN.fullmatch(entry["leaf_hash"])
+        assert ED25519_SIGNATURE_HEX_PATTERN.fullmatch(entry["signature_proof"])
+        audit_trail = entry["audit_trail"]
+        assert audit_trail["computed_index"] == index
+        assert audit_trail["verification_path"] == audit_tree["proof_paths"][str(index)]
+        assert _resolve_merkle_path(
+            entry["leaf_hash"],
+            audit_trail["verification_path"],
+        ) == ledger_pack["diiac_merkle_root"]

@@ -24,6 +24,7 @@ from agent_nodes import (
 )
 from crypto_signer import (
     canonicalize_diiac_leaf,
+    compute_diiac_merkle_root,
     derive_public_key_pem,
     generate_development_ed25519_private_key_pem,
     sign_trajectory_leaf,
@@ -68,6 +69,8 @@ DIIAC_ATTESTATION_PRIVATE_KEY_PEM = (
     DIIAC_SUBSTRATE_KEY_PEM or generate_development_ed25519_private_key_pem()
 )
 DIIAC_ATTESTATION_PUBLIC_KEY_PEM = derive_public_key_pem(DIIAC_ATTESTATION_PRIVATE_KEY_PEM)
+DIIAC_LEDGER_MAX_ENTRIES = 256
+DIIAC_LEDGER_REGISTRY: List[Dict[str, Any]] = []
 
 app.add_middleware(
     CORSMiddleware,
@@ -199,6 +202,29 @@ def _attestation_metrics(graph_output: Dict[str, Any]) -> Dict[str, Any]:
     return telemetry
 
 
+def register_diiac_ledger_event(graph_output: Dict[str, Any]) -> None:
+    run_id = str(graph_output.get("run_id", "")).strip()
+    leaf_hash = str(graph_output.get("diiac_merkle_leaf_hash", "")).strip()
+    signature_proof = str(graph_output.get("diiac_attestation_signature", "")).strip()
+    if not run_id or not leaf_hash or not signature_proof:
+        return
+
+    DIIAC_LEDGER_REGISTRY[:] = [
+        event for event in DIIAC_LEDGER_REGISTRY if event.get("run_id") != run_id
+    ]
+    DIIAC_LEDGER_REGISTRY.append(
+        {
+            "run_id": run_id,
+            "leaf_hash": leaf_hash,
+            "signature_proof": signature_proof,
+            "timestamp_marker": datetime.utcnow().isoformat() + "Z",
+            "cache_hit": bool(graph_output.get("cache_hit", False)),
+        }
+    )
+    if len(DIIAC_LEDGER_REGISTRY) > DIIAC_LEDGER_MAX_ENTRIES:
+        del DIIAC_LEDGER_REGISTRY[: len(DIIAC_LEDGER_REGISTRY) - DIIAC_LEDGER_MAX_ENTRIES]
+
+
 def attach_diiac_attestation(graph_output: Dict[str, Any]) -> Dict[str, Any]:
     terminal_payload = str(graph_output.get("current_node_payload") or _final_output_string(graph_output))
     graph_output["current_node_payload"] = terminal_payload
@@ -216,6 +242,7 @@ def attach_diiac_attestation(graph_output: Dict[str, Any]) -> Dict[str, Any]:
     )
     graph_output["diiac_attestation_public_key"] = DIIAC_ATTESTATION_PUBLIC_KEY_PEM
     graph_output["diiac_attestation_key_source"] = DIIAC_ATTESTATION_KEY_SOURCE
+    register_diiac_ledger_event(graph_output)
     return graph_output
 
 
@@ -731,6 +758,54 @@ async def consolidate_memory(
         "compiled_records_count": len(extracted_rows),
         "target_digest_file": target_digest_file,
         "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+def _ledger_manifest_events(limit: int = 64) -> List[Dict[str, Any]]:
+    bounded_limit = max(1, min(int(limit or 64), DIIAC_LEDGER_MAX_ENTRIES))
+    recent_events = DIIAC_LEDGER_REGISTRY[-bounded_limit:]
+    return sorted(
+        (dict(event) for event in recent_events),
+        key=lambda event: (str(event.get("leaf_hash", "")), str(event.get("run_id", ""))),
+    )
+
+
+@app.get("/api/governance/export-ledger-pack")
+@app.get("/governance/export-ledger-pack")
+async def export_governance_ledger_pack(
+    x_substrate_auth: str = Header(default="", alias="X-Substrate-Auth"),
+):
+    """Exports a deterministic Merkle-rooted DIIaC governance ledger pack."""
+    await verify_substrate_auth(x_substrate_auth)
+    ledger_events = _ledger_manifest_events()
+    if not ledger_events:
+        raise HTTPException(
+            status_code=404,
+            detail="DIIAC_LEDGER_EMPTY: No attested trajectory leaves are available for export.",
+        )
+
+    leaf_hashes = [str(event["leaf_hash"]) for event in ledger_events]
+    diiac_merkle_root, audit_tree = compute_diiac_merkle_root(leaf_hashes)
+    proof_paths = audit_tree.get("proof_paths", {})
+    manifest_registry = [
+        {
+            "run_id": str(event["run_id"]),
+            "leaf_hash": str(event["leaf_hash"]),
+            "signature_proof": str(event["signature_proof"]),
+            "audit_trail": {
+                "computed_index": index,
+                "verification_path": proof_paths.get(str(index), []),
+            },
+        }
+        for index, event in enumerate(ledger_events)
+    ]
+
+    return {
+        "ledger_pack_id": f"LG-EXP-{uuid.uuid4().hex.upper()}",
+        "timestamp_marker": datetime.utcnow().isoformat() + "Z",
+        "diiac_merkle_root": diiac_merkle_root,
+        "transaction_count": len(manifest_registry),
+        "manifest_registry": manifest_registry,
     }
 
 
